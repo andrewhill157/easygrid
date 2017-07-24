@@ -29,6 +29,27 @@ exit_codes = {
 	0: 0
 }
 
+def swap_ext(filename, old_extension, new_extension):
+    """
+    Utility function to swap file extensions on files.
+
+    Args:
+        filename (str): name of original file
+        old_extension (str): name of the current file extension
+        new_extension (str): name of the new file extension
+
+    Returns:
+        str: new filename
+
+    """
+    if (not new_extension or len(new_extension) == 0) or (not old_extension or len(old_extension) == 0):
+        raise ValueError('Old or new extension is invalid: %s, %s' % (old_extension, new_extension))
+
+    if old_extension not in filename:
+        raise ValueError('Old extension not found in filename: %s' % old_extension)
+
+    return filename.replace(old_extension, new_extension)
+
 def topological_sort(joblist):
     """
     Topological sort of a list of jobs and their dependencies
@@ -90,7 +111,7 @@ class JobManager:
 	where different stages of the pipeline are dependent on one another.
 	"""
 	
-	def __init__(self, temp_directory='.jobmanager'):
+	def __init__(self, temp_directory='.easygrid'):
 		"""
 		Constructor
 
