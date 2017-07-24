@@ -7,8 +7,10 @@ import itertools
 import tempfile
 import re
 import collections
+import datetime
 from glob import glob
-import .array_job_helper
+import stat
+import array_job_helper
 
 # Set up a basic logger
 LOGGER = logging.getLogger('something')
@@ -74,7 +76,7 @@ class JobManager:
 
 		"""
 		self.joblist = []
-		self.temp_directory = temp_directory
+		self.temp_directory = os.path.abspath(temp_directory)
 		self.jobreport = None
 
 	def add_job(self, command, name='default', memory='1G', walltime='100:00:00', dependencies=[]):
@@ -108,6 +110,12 @@ class JobManager:
 		# Make temp directory for job files and reports
 		if not os.path.exists(self.temp_directory):
 			os.makedirs(self.temp_directory)
+
+                # Write out Job Array helper script to temp directory
+		with open(self._get_job_array_helper_path(), 'w') as helper_script:
+			helper_script.write(array_job_helper.ARRAY_JOB_SCRIPT)
+			st = os.stat(self._get_job_array_helper_path())
+			os.chmod(self._get_job_array_helper_path(), st.st_mode | stat.S_IEXEC)
 
 		# Sort jobs in required order by dependency
 		self.joblist = topological_sort(self.joblist)
@@ -169,10 +177,13 @@ class JobManager:
 							'resourceUsage': exit_status.resourceUsage}
 
 							if exit_status['exitStatus'] == 0:
+								exit_status['completion_status'] = 'COMPLETE'
 								completed_jobs.append(exit_status)
 							elif exit_status['wasAborted'] or exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
+								exit_status['completion_status'] = 'SYSTEM_FAILED'
 								system_failed.append(exit_status)	
 							else:
+								exit_status['completion_status'] = 'FAILED'
 								failed_jobs.append(exit_status)
 
 					new_current_jobs.append((group, group_current_jobs))
@@ -245,9 +256,16 @@ class JobManager:
 			raise ValueError('No job report present. Must call run_jobs prior to report generation.')
 
 		with open(filename, 'w') as report:
+			report.write('\t'.join(['jobid', 'stage', 'status', 'was_aborted', 'exit_status', 'max_vmem_gb', 'duration_hms']) + '\n')
 			for group in self.jobreport:
-				for job in self.jobreport[group]['failed_jobs']:
-					entries = [job['id'], job['group'], str(job['wasAborted']), str(job['exitStatus']), str(job['resourceUsage']['maxvmem'])]
+				for job in self.jobreport[group]['failed_jobs'] + self.jobreport[group]['system_failed'] + self.jobreport[group]['completed_jobs']:
+					job_id = job['id']
+					aborted = str(job['wasAborted'])
+					completion_status = str(job['completion_status'])
+					exit_status = str(job['exitStatus'])
+					max_vmem_gb = str(float(job['resourceUsage']['maxvmem']) / 10e9) + ' GB'
+					duration = str(datetime.timedelta(milliseconds=int(float(job['resourceUsage']['end_time']) - float(job['resourceUsage']['start_time']))))
+					entries = [job_id, group, completion_status, aborted, exit_status, max_vmem_gb, duration]
 					report.write('\t'.join(entries) + '\n')
 
 	def clear(self):
@@ -261,7 +279,7 @@ class JobManager:
 		"""
 		Gets path to job array helper script.
 		"""
-		return os.path.join(self.temp_directory, 'job_array_helper.sh')
+		return os.path.join(self.temp_directory, 'job_array_helper.csh')
 
 	def _submit_arrayjob(self, sublist, session):
 		"""
@@ -284,10 +302,6 @@ class JobManager:
 		if len(dependencies) != 1:
 			raise ValueError('Multiple dependencies specified for same jobname: %s.' % str(dependencies))
 	
-		# Write out Job Array helper script to temp directory
-		with open(self.get_job_array_helper_path(), 'w') as helper_script:
-			helper_script.write(ARRAY_JOB_SCRIPT)
-
 		# Make string for native spec reflecting dependencies
 		if dependencies[0]:
 			dependency_string = ' -hold_jid %s' % ','.join(dependencies[0])
@@ -295,7 +309,8 @@ class JobManager:
 			dependency_string = ''
 
 		# Construct native spec for job
-		nativeSpecification = '-V -cwd -l mfree=%s,h_rt=%s%s' % (sublist[0]['memory'], sublist[0]['walltime'], dependency_string)
+		print self.temp_directory
+		nativeSpecification = '-V -cwd -e %s -o %s -l mfree=%s,h_rt=%s%s' % (self.temp_directory, self.temp_directory, sublist[0]['memory'], sublist[0]['walltime'], dependency_string)
 
 		# Submit job array of all commands in this stage
 		commands = [job['command'] for job in sublist]
