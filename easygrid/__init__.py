@@ -6,12 +6,10 @@ import sys
 import itertools
 import tempfile
 import re
-import collections
 import datetime
 from glob import glob
 import stat
 import array_job_helper
-import copy
 
 # Set up a basic logger
 LOGGER = logging.getLogger('something')
@@ -21,7 +19,6 @@ handler.setFormatter(myFormatter)
 LOGGER.addHandler(handler)
 LOGGER.setLevel(logging.DEBUG)
 myFormatter._fmt = "[JOBMANAGER]: " + myFormatter._fmt
-
 
 # Table to translate common error codes into more useful text
 exit_codes = {
@@ -55,7 +52,7 @@ def topological_sort(joblist):
                 graph_sorted.append((node, edges))
 
         if not acyclic:
-            raise RuntimeError("A cyclic dependency occurred")
+            raise RuntimeError("Cyclic dependency detected. Dependencies may not be circular (A dependent on B and B dependent on A is invalid, for example.")
 
     # Sort job list according to topological ordering
     order = dict([(job[0], i) for i,job in enumerate(graph_sorted)])
@@ -85,7 +82,6 @@ class Job:
 
 	def set_run_state(self, state):
 		self.run_state = state
-
 
 
 class JobManager:
@@ -182,8 +178,6 @@ class JobManager:
 		self.joblist = topological_sort(self.joblist)
 
 		# Submit each group of jobs as an array
-		status_dict = collections.OrderedDict()
-
 		for group, joblist in itertools.groupby(self.joblist, key=lambda x: x.name):
 			joblist = list(joblist)
 			joblist = self._submit_arrayjob(joblist)
@@ -203,6 +197,7 @@ class JobManager:
 		return jobstatus
 
 	def _get_exit_status(self, job):
+		# If already got this, just return stored value
 		if job.exit_status:
 			return job.exit_status
 
@@ -223,9 +218,20 @@ class JobManager:
 		else:
 			exit_status['completion_status'] = 'FAILED'
 
+		job.set_exit_status(exit_status)
 		return exit_status
 
 	def _get_run_status_count(self, value):
+		"""
+		Enumerate the number of jobs with a given value for run_status
+
+		Args:
+			value (str): value to enumerate
+
+		Returns: 
+			int: count of jobs with run_status == value
+
+		"""
 		count = 0
 
 		for group in self.submitted_jobs:
@@ -236,6 +242,16 @@ class JobManager:
 		return count
 
 	def _get_completion_status_count(self, value):
+		"""
+		Enumerate the number of jobs with a given value for completion status (in exit_status dict)
+
+		Args:
+			value (str): value to enumerate
+
+		Returns: 
+			int: count of jobs with completion_status == value
+			
+		"""		
 		count = 0
 
 		for group in self.submitted_jobs:
@@ -245,6 +261,17 @@ class JobManager:
 		return count
 
 	def monitor_jobs(self, logging=True):
+		"""
+		Once jobs have been submitted via run_jobs, monitor their progress and log to screen.
+
+		Args:
+			logging (bool): True if want to log messages to screen and False otherwise.
+
+		"""
+
+		if not self.submitted_jobs:
+			raise ValueError('No jobs have been submitted with run_jobs. Cannot monitor.')
+
 		last_log = None
 
 		while True:
@@ -268,6 +295,7 @@ class JobManager:
 			total_complete = self._get_completion_status_count("COMPLETE")
 			log_message = '%s jobs running\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system failed\r' % (total_running, total_pending, total_complete, total_failed, total_system_failed)
 
+			# Only log when status has changed and when requested
 			if logging and (last_log != log_message):
 				last_log = log_message				
 				LOGGER.info(log_message)
@@ -278,7 +306,7 @@ class JobManager:
 			if total_running + total_pending == 0:
 				break
 
-		# Write out the report
+		# Write out the report of logging results
 		self.complete = True
 		self.write_report(os.path.join(self.temp_directory, 'job_report.txt'))
 
