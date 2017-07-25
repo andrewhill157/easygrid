@@ -9,6 +9,7 @@ import re
 import datetime
 from glob import glob
 import stat
+import copy
 import array_job_helper
 
 # Set up a basic logger
@@ -18,7 +19,7 @@ handler = logging.StreamHandler()
 handler.setFormatter(myFormatter)
 LOGGER.addHandler(handler)
 LOGGER.setLevel(logging.DEBUG)
-myFormatter._fmt = "[JOBMANAGER]: " + myFormatter._fmt
+myFormatter._fmt = "[EASYGRID]: " + myFormatter._fmt
 
 # Table to translate common error codes into more useful text
 exit_codes = {
@@ -85,14 +86,15 @@ class Job:
 	Class for holding metadata about a job.
 	"""
 
-	def __init__(self, command, name, dependencies=[], memory='1G', walltime='10:00:00'):
+	def __init__(self, command, name, dependencies=[], memory='1G', walltime='10:00:00', outputs = []):
 		self.command = command
 		self.memory = memory
 		self.walltime = walltime
 		self.dependencies = dependencies
 		self.name = name
-		self.id = id
-		self.exit_status = None
+		self.outputs = outputs
+		self.id = None
+		self.exit_status = {}
 		self.run_state = None
 	
 	def set_id(self, id):
@@ -103,6 +105,16 @@ class Job:
 
 	def set_run_state(self, state):
 		self.run_state = state
+
+	def outputs_exist(self):
+		"""
+		Helper function to check if the requested set of output files exist.
+		"""
+
+		if len(self.outputs) == 0:
+			return True
+		else:
+			return not False in [os.path.exists(path) for path in self.outputs]
 
 
 class JobManager:
@@ -126,6 +138,7 @@ class JobManager:
 		self.session.initialize()
 		self.submitted_jobs = {}
 		self.complete = False
+		self.skipped_jobs = []
 
 	def __del__(self):
 		# Remove temp files
@@ -139,7 +152,7 @@ class JobManager:
 		if os.path.exists(self._get_job_array_helper_path()):
 			os.remove(self._get_job_array_helper_path())
 
-	def add_job(self, command, name, dependencies=[], memory='1G', walltime='10:00:00'):
+	def add(self, command, name, dependencies=[], memory='1G', walltime='10:00:00', outputs=[]):
 		"""
 		Adds a command to be run as a job in the job manager.
 		Must be called at least once prior to calling run_jobs.
@@ -150,9 +163,17 @@ class JobManager:
 			memory (str): memory request for job such as '1G' 
 			walltime (str): wall time request such as '100:00:00'
 			dependencies (list of str): a list of names for other stages that this job is dependent on.
+			outputs (list of str): a list of output files to check for before scheduling (if all are present, job not scheduled)
 
 		"""
-		self.joblist.append(Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime))
+		# Check output files
+	
+		job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, outputs=outputs)
+	
+		if len(job.outputs) == 0 or not job.outputs_exist():
+			self.joblist.append(job)
+		else:
+			self.skipped_jobs.append(job)
 
 	def _write_job_array_helper(self):
 		"""
@@ -176,7 +197,7 @@ class JobManager:
 		for file in glob(os.path.join(self.temp_directory, '*')):
 			os.remove(file)
 
-	def run_jobs(self, monitor=True, logging=True):
+	def run(self, monitor=True, logging=True, dry=False):
 		"""
 		After adding jobs with add_jobs, this function executes them as a pipeline on Grid Engine.
 
@@ -198,16 +219,48 @@ class JobManager:
 		# Sort jobs in required order by dependency
 		self.joblist = topological_sort(self.joblist)
 
-		# Submit each group of jobs as an array
+
+		# Submit each group of jobs as an array (or perform a dry run)
+		if dry:
+			print('DRY RUN: would skip %s jobs that already have outputs present...' % len(self.skipped_jobs))
+
 		for group, joblist in itertools.groupby(self.joblist, key=lambda x: x.name):
 			joblist = list(joblist)
-			joblist = self._submit_arrayjob(joblist)
 
-			self.submitted_jobs[group] = joblist
+			if dry:
+				print(self._get_group_dry_run_message(group, joblist))
 
-		if monitor:
+				for job in joblist:
+					print(self._get_job_dry_run_message(job))
+			else:
+				joblist = self._submit_arrayjob(joblist)
+				self.submitted_jobs[group] = joblist
+
+		if not dry and monitor:
 			self.monitor_jobs(logging=logging)
 
+	def _get_group_dry_run_message(self, group, joblist):
+		"""
+		Helper function for logging info about each stage in dry runs
+		"""
+		dependencies = joblist[0].dependencies
+
+		if dependencies:
+			dependency_string = ' (%s jobs; dependent on %s)' % (len(joblist), ', '.join(dependencies))
+		else:
+			dependency_string = ' (%s jobs)' % len(joblist)
+
+		return 'Job array for group %s%s:' % (group, dependency_string)
+
+	def _get_job_dry_run_message(self, job):
+		"""
+		Helper function to get a log message from a Job object
+		"""
+		if job.outputs:
+			output_string = ' (outputs: %s)' % ', '.join(job.outputs)
+		else:
+			output_string = ''
+		return '\t%s%s' % (job.command, output_string)
 
 	def _get_run_pass_fail(self, job):
 		try:
@@ -233,7 +286,10 @@ class JobManager:
 		'resourceUsage': exit_status.resourceUsage}
 
 		if exit_status['exitStatus'] == 0:
-			exit_status['completion_status'] = 'COMPLETE'
+			if job.outputs_exist():
+				exit_status['completion_status'] = 'COMPLETE'
+			else:
+				exit_status['completion_status'] = 'COMPLETE_MISSING_OUTPUTS'
 		elif exit_status['wasAborted'] or exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
 			exit_status['completion_status'] = 'SYSTEM_FAILED'
 		else:
@@ -293,6 +349,10 @@ class JobManager:
 		if not self.submitted_jobs:
 			raise ValueError('No jobs have been submitted with run_jobs. Cannot monitor.')
 
+		# Log skipped jobs if there are any
+		if len(self.skipped_jobs) > 0:
+			LOGGER.info('Skipping %s jobs because specified outputs already present...' % len(self.skipped_jobs))
+
 		last_log = None
 
 		while True:
@@ -350,21 +410,38 @@ class JobManager:
 
 		with open(filename, 'w') as report:
 			report.write('\t'.join(['jobid', 'stage', 'status', 'was_aborted', 'exit_status', 'memory_request', 'max_vmem_gb', 'duration_hms', 'log_file', 'command']) + '\n')
-			for group in self.submitted_jobs:
-				jobs = sorted(self.submitted_jobs[group], key=lambda x: x.exit_status['completion_status'])
-				for job in jobs:
-					job_exit_info = job.exit_status
-					job_id = job.id
-					aborted = str(job_exit_info['wasAborted'])
-					completion_status = str(job_exit_info['completion_status'])
-					exit_status = str(job_exit_info['exitStatus'])
-					max_vmem_gb = str(float(job_exit_info['resourceUsage']['maxvmem']) / 10e9)
-					duration = str(datetime.timedelta(milliseconds=int(float(job_exit_info['resourceUsage']['end_time']) - float(job_exit_info['resourceUsage']['start_time']))))
-					command = job.command
-					log_file = ','.join(glob(os.path.join(self.temp_directory, '*%s*' % job.id)))
-					memory_request = job.memory
+			
+			# Report on both scheduled and skipped jobs
+			report_jobs = copy.deepcopy(self.submitted_jobs)
+			report_jobs['skipped'] = self.skipped_jobs
 
-					entries = [job_id, group, completion_status, aborted, exit_status, memory_request, max_vmem_gb, duration, log_file, command]
+			for group in report_jobs:
+				jobs = sorted(report_jobs[group], key=lambda x: x.exit_status.get('completion_status', x.name))
+				for job in jobs:
+					
+					job_id = job.id
+					command = str(job.command)
+					memory_request = str(job.memory)
+
+					# If job was not scheduled, just put in dummy entry
+					if not job_id:
+						aborted = 'NA'
+						completion_status = 'SKIPPED'
+						exit_status = 'NA'
+						max_vmem_gb = 'NA'
+						duration = 'NA'
+						log_file = 'NA'
+					else:
+						job_exit_info = job.exit_status
+						aborted = str(job_exit_info['wasAborted'])
+						completion_status = str(job_exit_info['completion_status'])
+						exit_status = str(job_exit_info['exitStatus'])
+						max_vmem_gb = str(float(job_exit_info['resourceUsage']['maxvmem']) / 10e9)
+						duration = str(datetime.timedelta(milliseconds=int(float(job_exit_info['resourceUsage']['end_time']) - float(job_exit_info['resourceUsage']['start_time']))))
+						log_file = ','.join(glob(os.path.join(self.temp_directory, '*%s*' % job.id)))
+
+					# Construct output
+					entries = [str(job_id), job.name, completion_status, aborted, exit_status, memory_request, max_vmem_gb, duration, log_file, command]
 					report.write('\t'.join(entries) + '\n')
 
 	def _get_job_array_helper_path(self):
