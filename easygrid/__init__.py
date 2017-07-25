@@ -21,6 +21,19 @@ LOGGER.addHandler(handler)
 LOGGER.setLevel(logging.DEBUG)
 myFormatter._fmt = "[EASYGRID]: " + myFormatter._fmt
 
+# Run state definitions
+RUNNING = 'RUNNING'
+PENDING = 'PENDING'
+FINISHED = 'FINISHED'
+
+# Completion status definitions
+FAILED = 'FAILED'
+COMPLETE = 'COMPLETE'
+KILLED_BY_USER = 'KILLED_BY_USER'
+FAILED_DEPENDENCY = 'FAILED_DEPENDENCY'
+SYSTEM_FAILED = 'SYSTEM_FAILED'
+COMPLETE_MISSING_OUTPUTS = 'COMPLETE_MISSING_OUTPUTS'
+
 # Table to translate common error codes into more useful text
 exit_codes = {
 	127: 'command not found',
@@ -51,7 +64,7 @@ def swap_ext(filename, old_extension, new_extension):
 
     return filename.replace(old_extension, new_extension)
 
-def topological_sort(joblist):
+def _topological_sort(joblist):
     """
     Topological sort of a list of jobs and their dependencies
     """
@@ -86,7 +99,7 @@ class Job:
 	Class for holding metadata about a job.
 	"""
 
-	def __init__(self, command, name, dependencies=[], memory='1G', walltime='10:00:00', outputs = []):
+	def __init__(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', outputs = []):
 		self.command = command
 		self.memory = memory
 		self.walltime = walltime
@@ -133,27 +146,48 @@ class JobManager:
 		"""
 		self.joblist = []
 		self.temp_directory = os.path.abspath(temp_directory)
-		self.jobreport = None
 		self.session = drmaa.Session()
 		self.session.initialize()
 		self.submitted_jobs = {}
 		self.complete = False
 		self.skipped_jobs = []
 		self.failed_stages = []
+		self.job_templates = []
 
 	def __del__(self):
+		# Clean everything up
+		self.clear()
+
+		# Close the DRMAA session
+		self.session.exit()
+
+	def clear(self):
 		# Remove temp files
 		for file in glob(os.path.join(self.temp_directory, 'tmp*')):
 			os.remove(file)
 
-		# Close the DRMAA session
-		self.session.exit()
+		# Remove the the job template files
+		for template in self.job_templates:
+			self.session.deleteJobTemplate(template)
 
 		# Remove bash helper script
 		if os.path.exists(self._get_job_array_helper_path()):
 			os.remove(self._get_job_array_helper_path())
 
-	def add(self, command, name, dependencies=[], memory='1G', walltime='10:00:00', outputs=[]):
+		self.joblist = []
+		self.submitted_jobs = {}
+		self.complete = False
+		self.skipped_jobs = []
+		self.failed_stages = []
+		self.job_templates = []
+
+	def set_temp_directory(self, path):
+		"""
+		Setter for the temp directory for pipeline runs.
+		"""
+		os.path.abspath(temp_directory)
+
+	def add(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', outputs=[]):
 		"""
 		Adds a command to be run as a job in the job manager.
 		Must be called at least once prior to calling run_jobs.
@@ -176,28 +210,6 @@ class JobManager:
 		else:
 			self.skipped_jobs.append(job)
 
-	def _write_job_array_helper(self):
-		"""
-		Writes a bash script to temp folder to facilitate array job submission
-		"""
-		with open(self._get_job_array_helper_path(), 'w') as helper_script:
-			helper_script.write(array_job_helper.ARRAY_JOB_SCRIPT)
-			st = os.stat(self._get_job_array_helper_path())
-			os.chmod(self._get_job_array_helper_path(), st.st_mode | stat.S_IEXEC)
-
-	def _prep_temp_dir(self):
-		"""
-		Make the temporary directory needed for JobManager job executtion.
-		If exists, clear out old files.
-		"""
-		#
-		if not os.path.exists(self.temp_directory):
-			os.makedirs(self.temp_directory)
-
-		# Clean any existing files
-		for file in glob(os.path.join(self.temp_directory, '*')):
-			os.remove(file)
-
 	def run(self, monitor=True, logging=True, dry=False):
 		"""
 		After adding jobs with add_jobs, this function executes them as a pipeline on Grid Engine.
@@ -218,7 +230,7 @@ class JobManager:
 		self._write_job_array_helper()
 
 		# Sort jobs in required order by dependency
-		self.joblist = topological_sort(self.joblist)
+		self.joblist = _topological_sort(self.joblist)
 
 		# Submit each group of jobs as an array (or perform a dry run)
 		if dry:
@@ -237,7 +249,29 @@ class JobManager:
 				self.submitted_jobs[group] = joblist
 
 		if not dry and monitor:
-			self.monitor_jobs(logging=logging)
+			self.monitor(logging=logging)
+
+	def _write_job_array_helper(self):
+		"""
+		Writes a bash script to temp folder to facilitate array job submission
+		"""
+		with open(self._get_job_array_helper_path(), 'w') as helper_script:
+			helper_script.write(array_job_helper.ARRAY_JOB_SCRIPT)
+			st = os.stat(self._get_job_array_helper_path())
+			os.chmod(self._get_job_array_helper_path(), st.st_mode | stat.S_IEXEC)
+
+	def _prep_temp_dir(self):
+		"""
+		Make the temporary directory needed for JobManager job execution.
+		If exists, clear out old files.
+		"""
+		#
+		if not os.path.exists(self.temp_directory):
+			os.makedirs(self.temp_directory)
+
+		# Clean any existing files
+		for file in glob(os.path.join(self.temp_directory, '*')):
+			os.remove(file)
 
 	def _get_group_dry_run_message(self, group, joblist):
 		"""
@@ -275,25 +309,37 @@ class JobManager:
 		if job.exit_status:
 			return job.exit_status
 
-		exit_status = self.session.wait(job.id, drmaa.Session.TIMEOUT_WAIT_FOREVER)
+		try:
+			exit_status = self.session.wait(job.id, drmaa.Session.TIMEOUT_WAIT_FOREVER)
 
-		exit_status = {'hasExited': exit_status.hasExited,
-		'hasSignal': exit_status.hasSignal,
-		'terminatedSignal': exit_status.terminatedSignal,
-		'hasCoreDump': exit_status.hasCoreDump,
-		'wasAborted': exit_status.wasAborted,
-		'exitStatus': exit_codes.get(exit_status.exitStatus, 'unknown exit code: %s' % exit_status.exitStatus),
-		'resourceUsage': exit_status.resourceUsage}
+			exit_status = {'hasExited': exit_status.hasExited,
+				'hasSignal': exit_status.hasSignal,
+				'terminatedSignal': exit_status.terminatedSignal,
+				'hasCoreDump': exit_status.hasCoreDump,
+				'wasAborted': exit_status.wasAborted,
+				'exitStatus': exit_codes.get(exit_status.exitStatus, 'unknown exit code: %s' % exit_status.exitStatus),
+				'resourceUsage': exit_status.resourceUsage}
 
-		if exit_status['exitStatus'] == 0:
-			if job.outputs_exist():
-				exit_status['completion_status'] = 'COMPLETE'
+			if exit_status['exitStatus'] == 0:
+				if job.outputs_exist():
+					exit_status['completion_status'] = COMPLETE
+				else:
+					exit_status['completion_status'] = COMPLETE_MISSING_OUTPUTS
+			elif exit_status['wasAborted'] or exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
+				exit_status['completion_status'] = SYSTEM_FAILED
 			else:
-				exit_status['completion_status'] = 'COMPLETE_MISSING_OUTPUTS'
-		elif exit_status['wasAborted'] or exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
-			exit_status['completion_status'] = 'SYSTEM_FAILED'
-		else:
-			exit_status['completion_status'] = 'FAILED'				
+				exit_status['completion_status'] = FAILED	
+
+		except:
+			# In cases where jobs are killed by user, wait will fail, so need to catch
+			exit_status = {'hasExited': 'NA',
+				'hasSignal': 'NA',
+				'terminatedSignal': 'NA',
+				'hasCoreDump': 'NA',
+				'wasAborted': 'NA',
+				'exitStatus': 'NA',
+				'resourceUsage': 'NA',
+				'completion_status': KILLED_BY_USER}
 
 		job.set_exit_status(exit_status)
 		return exit_status
@@ -347,7 +393,7 @@ class JobManager:
 			failed_jobs = []
 
 			for job in self.submitted_jobs[group]:
-				if job.exit_status and job.exit_status['completion_status'] == 'FAILED':
+				if job.exit_status and job.exit_status['completion_status'] == FAILED:
 					failed_jobs.append(job)
 			
 			if len(failed_jobs) == len(self.submitted_jobs[group]):
@@ -394,7 +440,10 @@ class JobManager:
 		Helper function to kill a list of Jobs.
 		"""
 		for job in joblist:
-			self.session.control(job.id, drmaa.JobControlAction.TERMINATE)
+			try:
+				self.session.control(job.id, drmaa.JobControlAction.TERMINATE)
+			except:
+				print('WARNING: tried to kill job but does not exist (user may have deleted prior to termination): %s' % job.id)
 
 			exit_status = {'hasExited': 'NA',
 				'hasSignal': 'NA',
@@ -403,11 +452,11 @@ class JobManager:
 				'wasAborted': 'NA',
 				'exitStatus': 'NA',
 				'resourceUsage': 'NA',
-				'completion_status': 'FAILED_DEPENDENCY'}	
+				'completion_status': FAILED_DEPENDENCY}	
 
 			job.set_exit_status(exit_status)			
 
-	def monitor_jobs(self, logging=True):
+	def monitor(self, logging=True):
 		"""
 		Once jobs have been submitted via run_jobs, monitor their progress and log to screen.
 
@@ -432,19 +481,19 @@ class JobManager:
 					
 					if  jobstatus != drmaa.JobState.DONE and jobstatus != drmaa.JobState.FAILED:
 						if jobstatus == drmaa.JobState.RUNNING:
-							job.set_run_state('RUNNING')
+							job.set_run_state(RUNNING)
 						else:
-							job.set_run_state('PENDING')
+							job.set_run_state(PENDING)
 					else:
-						job.set_run_state('FINISHED')
+						job.set_run_state(FINISHED)
 						job.set_exit_status(self._get_exit_status(job))
 
-			total_running = self._get_run_status_count("RUNNING")
-			total_pending = self._get_run_status_count("PENDING")
-			total_failed = self._get_completion_status_count("FAILED")
-			total_system_failed = self._get_completion_status_count("SYSTEM_FAILED")
-			total_complete = self._get_completion_status_count("COMPLETE")
-			log_message = '%s jobs running\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system failed\r' % (total_running, total_pending, total_complete, total_failed, total_system_failed)
+			total_running = self._get_run_status_count(RUNNING)
+			total_pending = self._get_run_status_count(PENDING)
+			total_failed = self._get_completion_status_count(FAILED)
+			total_system_failed = self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
+			total_complete = self._get_completion_status_count(COMPLETE)
+			log_message = '%s jobs running\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system/user failures\r' % (total_running, total_pending, total_complete, total_failed, total_system_failed)
 
 			# Only log when status has changed and when requested
 			if logging and (last_log != log_message):
@@ -453,12 +502,10 @@ class JobManager:
 
 			# Check if any stages have failed entirely
 			failed_stages = self._get_failed_stages()
-
-			
 			new_failed_stages = [stage for stage in failed_stages if stage not in self.failed_stages]
 
+			# Kill dependent stages of any entirely failed stages
 			if new_failed_stages:
-
 				jobs_to_kill = self._get_dependents_of_stage(new_failed_stages)
 				killed_stages = list(set([job.name for job in jobs_to_kill]))
 				
@@ -519,9 +566,10 @@ class JobManager:
 						max_vmem_gb = 'NA'
 						duration = 'NA'
 						log_file = 'NA'
-					elif job.exit_status['completion_status'] == 'FAILED_DEPENDENCY':
+					elif job.exit_status['completion_status'] == FAILED_DEPENDENCY or job.exit_status['completion_status'] == KILLED_BY_USER:
+						# Exit status has a bunch of default values in this case just put in fillers
 						aborted = 'True'
-						completion_status = 'FAILED_DEPENDENCY'
+						completion_status = job.exit_status['completion_status']
 						exit_status = 'NA'
 						max_vmem_gb = 'NA'
 						duration = 'NA'
@@ -592,5 +640,8 @@ class JobManager:
 
 		for job, id in zip(sublist, jobids):
 			job.set_id(id)
+
+		# Add job templates
+		self.job_templates.append(jt)
 		
 		return sublist
