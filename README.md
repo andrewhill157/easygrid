@@ -31,11 +31,11 @@ for fastq in fastq_list:
     secondary_analysis_command = 'python analyze_reads.py %s %s' % (bam_file, secondary_results)
     plot_command = 'Rscript plot_data.R %s %s' % (secondary_results, plot_name)
    
-    pipeline.add_job(align_command, name='align', memory='5G')
-    pipeline.add_job(secondary_analysis_command, name='secondary_analysis', dependencies=['align'])
-    pipeline.add_job(plot_command, name='plot', dependencies=['secondary_analysis'])
+    pipeline.add(align_command, name='align', memory='5G')
+    pipeline.add(secondary_analysis_command, name='secondary_analysis', dependencies=['align'])
+    pipeline.add(plot_command, name='plot', dependencies=['secondary_analysis'])
 
-pipeline.run_jobs()
+pipeline.run()
 ```
 
 By default `run_jobs` will log progress and a report will be saved to `.easygrid/job_report.txt` with information about completion status, runtime, memory usage, etc. Log files from all jobs will also be saved to this directory.
