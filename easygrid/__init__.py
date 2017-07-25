@@ -139,6 +139,7 @@ class JobManager:
 		self.submitted_jobs = {}
 		self.complete = False
 		self.skipped_jobs = []
+		self.failed_stages = []
 
 	def __del__(self):
 		# Remove temp files
@@ -207,7 +208,7 @@ class JobManager:
 
 		"""
 		# Error if no jobs added
-		if not self.joblist:
+		if not self.joblist and not self.skipped_jobs:
 			raise ValueError('No jobs added. Must call add_jobs prior to running jobs.')
 
 		# Make temp directory for job files and reports
@@ -218,7 +219,6 @@ class JobManager:
 
 		# Sort jobs in required order by dependency
 		self.joblist = topological_sort(self.joblist)
-
 
 		# Submit each group of jobs as an array (or perform a dry run)
 		if dry:
@@ -293,7 +293,7 @@ class JobManager:
 		elif exit_status['wasAborted'] or exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
 			exit_status['completion_status'] = 'SYSTEM_FAILED'
 		else:
-			exit_status['completion_status'] = 'FAILED'
+			exit_status['completion_status'] = 'FAILED'				
 
 		job.set_exit_status(exit_status)
 		return exit_status
@@ -336,6 +336,76 @@ class JobManager:
 				if job.exit_status and job.exit_status['completion_status'] == value:
 					count += 1
 		return count
+
+	def _get_failed_stages(self):
+		"""
+		Helper function to get a list of stages that have failed entirely.
+		"""
+		failed_stages = []
+
+		for group in self.submitted_jobs:
+			failed_jobs = []
+
+			for job in self.submitted_jobs[group]:
+				if job.exit_status and job.exit_status['completion_status'] == 'FAILED':
+					failed_jobs.append(job)
+			
+			if len(failed_jobs) == len(self.submitted_jobs[group]):
+				failed_stages.append(group)
+
+		return failed_stages
+
+	def _get_dependents_of_stage(self, stages):
+		"""
+		Helper function to get a list of jobs that belong to or are dependent on a list of stages.
+
+		Args:
+			stages: list of stages to consider
+
+		Returns:
+			list of Job: list of jobs that belong to or are dependent on a list of stages.
+
+		"""
+		stages = set(stages)
+		dependent_jobs = []
+
+		for group in self.submitted_jobs:
+			if group in stages:
+				for job in self.submitted_jobs[group]:
+					if not job.exit_status:
+						dependent_jobs.append(job)
+			else:
+				# Do a first pass to make sure you get all the chained dependencies
+				for job in self.submitted_jobs[group]:
+					for dependency in job.dependencies:
+						if dependency in stages:
+							stages.add(group)
+
+		# Do a second pass actually flag all the jobs that need to be killed
+		for group in self.submitted_jobs:
+			for job in self.submitted_jobs[group]:	
+				if True in [dependency in stages for dependency in job.dependencies]:
+					dependent_jobs.append(job)
+
+		return dependent_jobs
+
+	def _kill_jobs(self, joblist):
+		"""
+		Helper function to kill a list of Jobs.
+		"""
+		for job in joblist:
+			self.session.control(job.id, drmaa.JobControlAction.TERMINATE)
+
+			exit_status = {'hasExited': 'NA',
+				'hasSignal': 'NA',
+				'terminatedSignal': 'NA',
+				'hasCoreDump': 'NA',
+				'wasAborted': 'NA',
+				'exitStatus': 'NA',
+				'resourceUsage': 'NA',
+				'completion_status': 'FAILED_DEPENDENCY'}	
+
+			job.set_exit_status(exit_status)			
 
 	def monitor_jobs(self, logging=True):
 		"""
@@ -380,7 +450,25 @@ class JobManager:
 			if logging and (last_log != log_message):
 				last_log = log_message				
 				LOGGER.info(log_message)
+
+			# Check if any stages have failed entirely
+			failed_stages = self._get_failed_stages()
+
 			
+			new_failed_stages = [stage for stage in failed_stages if stage not in self.failed_stages]
+
+			if new_failed_stages:
+
+				jobs_to_kill = self._get_dependents_of_stage(new_failed_stages)
+				killed_stages = list(set([job.name for job in jobs_to_kill]))
+				
+				for stage in killed_stages:
+					self.failed_stages.extend(new_failed_stages)
+					self.failed_stages.extend(killed_stages)
+
+				LOGGER.info('Stages failed: %s; Killing dependent stages: %s' % (', '.join(new_failed_stages), ', '.join(killed_stages)))
+				self._kill_jobs(jobs_to_kill)
+
 			time.sleep(1)
 			
 			# Check to see if all jobs have completed
@@ -427,6 +515,13 @@ class JobManager:
 					if not job_id:
 						aborted = 'NA'
 						completion_status = 'SKIPPED'
+						exit_status = 'NA'
+						max_vmem_gb = 'NA'
+						duration = 'NA'
+						log_file = 'NA'
+					elif job.exit_status['completion_status'] == 'FAILED_DEPENDENCY':
+						aborted = 'True'
+						completion_status = 'FAILED_DEPENDENCY'
 						exit_status = 'NA'
 						max_vmem_gb = 'NA'
 						duration = 'NA'
