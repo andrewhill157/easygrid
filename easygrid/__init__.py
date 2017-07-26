@@ -513,11 +513,13 @@ class JobManager:
 				jobs_to_kill = self._get_dependents_of_stage(new_failed_stages)
 				killed_stages = list(set([job.name for job in jobs_to_kill]))
 				
-				for stage in killed_stages:
-					self.failed_stages.extend(new_failed_stages)
-					self.failed_stages.extend(killed_stages)
+				self.failed_stages.extend(killed_stages + new_failed_stages)
 
-				LOGGER.info('Stages failed: %s; Killing dependent stages: %s' % (', '.join(new_failed_stages), ', '.join(killed_stages)))
+				if jobs_to_kill:
+					LOGGER.info('Stages failed: %s; Killing dependent stages: %s' % (', '.join(new_failed_stages), ', '.join(killed_stages)))
+				else:
+					LOGGER.info('Stages failed: %s; no other stages dependent.' % ', '.join(new_failed_stages))
+					
 				self._kill_jobs(jobs_to_kill)
 
 			time.sleep(1)
