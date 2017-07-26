@@ -26,6 +26,7 @@ myFormatter._fmt = "[EASYGRID]: " + myFormatter._fmt
 RUNNING = 'RUNNING'
 PENDING = 'PENDING'
 FINISHED = 'FINISHED'
+SKIPPED = 'SKIPPED'
 
 # Completion status definitions
 FAILED = 'FAILED'
@@ -599,7 +600,7 @@ class JobManager:
 					# If job was not scheduled, just put in dummy entry
 					if not job_id:
 						aborted = 'NA'
-						completion_status = 'SKIPPED'
+						completion_status = SKIPPED
 						exit_status = 'NA'
 						max_vmem_gb = 'NA'
 						duration = 'NA'
