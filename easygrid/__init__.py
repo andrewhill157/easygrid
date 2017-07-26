@@ -298,12 +298,22 @@ class JobManager:
 		return '\t%s%s' % (job.command, output_string)
 
 	def _get_run_pass_fail(self, job):
+		if self.run_state and self.run_state == FINISHED:
+			return self.run_state
+
 		try:
 			jobstatus = self.session.jobStatus(job.id)
-		except:
-			jobstatus = drmaa.JobState.DONE
 
-		return jobstatus
+			if  jobstatus != drmaa.JobState.DONE and jobstatus != drmaa.JobState.FAILED:
+				if jobstatus == drmaa.JobState.RUNNING:
+					return RUNNING
+				else:
+					return PENDING
+			else:
+				return FINISHED
+
+		except:
+			return FINISHED
 
 	def _get_exit_status(self, job):
 		# If already got this, just return stored value
@@ -482,14 +492,9 @@ class JobManager:
 			for group, joblist in self.submitted_jobs.items():
 				for job in joblist:
 					jobstatus = self._get_run_pass_fail(job)
+					job.set_run_state(jobstatus)
 					
-					if  jobstatus != drmaa.JobState.DONE and jobstatus != drmaa.JobState.FAILED:
-						if jobstatus == drmaa.JobState.RUNNING:
-							job.set_run_state(RUNNING)
-						else:
-							job.set_run_state(PENDING)
-					else:
-						job.set_run_state(FINISHED)
+					if jobstatus == FINISHED:
 						job.set_exit_status(self._get_exit_status(job))
 
 			total_running = self._get_run_status_count(RUNNING)
@@ -519,7 +524,7 @@ class JobManager:
 					LOGGER.info('Stages failed: %s; Killing dependent stages: %s' % (', '.join(new_failed_stages), ', '.join(killed_stages)))
 				else:
 					LOGGER.info('Stages failed: %s; no other stages dependent.' % ', '.join(new_failed_stages))
-					
+
 				self._kill_jobs(jobs_to_kill)
 
 			time.sleep(1)
