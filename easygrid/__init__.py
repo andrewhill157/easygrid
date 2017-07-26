@@ -358,6 +358,32 @@ class JobManager:
 		job.set_exit_status(exit_status)
 		return exit_status
 
+	def _get_stages_with_run_status(self, value):
+		"""
+		Return a list of stage names for jobs that have a specified run status.
+
+		Args:
+			value (str): run status to consider
+
+		Returns:
+			int: stages with requested run status
+		"""
+
+		return list(set([job.name for job in self.submitted_jobs if job.run_status == value]))
+
+	def _get_stages_with_exit_status(self, value):
+		"""
+		Return a list of stage names for jobs that have a specified exit status.
+
+		Args:
+			value (str): run status to consider
+
+		Returns:
+			int: stages with requested run status
+		"""
+
+		return list(set([job.name for job in self.submitted_jobs if job.exit_status and job.exit_status['completion_status'] == value]))
+
 	def _get_run_status_count(self, value):
 		"""
 		Enumerate the number of jobs with a given value for run_status
@@ -498,11 +524,12 @@ class JobManager:
 						job.set_exit_status(self._get_exit_status(job))
 
 			total_running = self._get_run_status_count(RUNNING)
+			stages_running = self._get_stages_with_run_status(RUNNING)
 			total_pending = self._get_run_status_count(PENDING)
 			total_failed = self._get_completion_status_count(FAILED)
 			total_system_failed = self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
 			total_complete = self._get_completion_status_count(COMPLETE)
-			log_message = '%s jobs running\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system/user failures\r' % (total_running, total_pending, total_complete, total_failed, total_system_failed)
+			log_message = '%s jobs running (stages: %s)\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system/user failures\r' % (total_running, ','.join(stages_running), total_pending, total_complete, total_failed, total_system_failed)
 
 			# Only log when status has changed and when requested
 			if logging and (last_log != log_message):
