@@ -11,6 +11,7 @@ from glob import glob
 import stat
 import copy
 import array_job_helper
+import collections
 
 # Set up a basic logger
 LOGGER = logging.getLogger('something')
@@ -148,7 +149,7 @@ class JobManager:
 		self.temp_directory = os.path.abspath(temp_directory)
 		self.session = drmaa.Session()
 		self.session.initialize()
-		self.submitted_jobs = {}
+		self.submitted_jobs = collections.OrderedDict()
 		self.complete = False
 		self.skipped_jobs = []
 		self.failed_stages = []
@@ -175,7 +176,7 @@ class JobManager:
 			os.remove(self._get_job_array_helper_path())
 
 		self.joblist = []
-		self.submitted_jobs = {}
+		self.submitted_jobs = collections.OrderedDict()
 		self.complete = False
 		self.skipped_jobs = []
 		self.failed_stages = []
@@ -185,7 +186,7 @@ class JobManager:
 		"""
 		Setter for the temp directory for pipeline runs.
 		"""
-		os.path.abspath(temp_directory)
+		self.temp_directory = os.path.abspath(path)
 
 	def add(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', outputs=[]):
 		"""
@@ -325,13 +326,16 @@ class JobManager:
 					exit_status['completion_status'] = COMPLETE
 				else:
 					exit_status['completion_status'] = COMPLETE_MISSING_OUTPUTS
-			elif exit_status['wasAborted'] or exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
+			
+			if exit_status['wasAborted']:
+				exit_status['completion_status'] = KILLED_BY_USER
+			elif exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
 				exit_status['completion_status'] = SYSTEM_FAILED
 			else:
-				exit_status['completion_status'] = FAILED	
+				exit_status['completion_status'] = FAILED
 
 		except:
-			# In cases where jobs are killed by user, wait will fail, so need to catch
+			# In some cases where jobs are killed by user, wait will fail, so need to catch
 			exit_status = {'hasExited': 'NA',
 				'hasSignal': 'NA',
 				'terminatedSignal': 'NA',
