@@ -151,9 +151,10 @@ class JobManager:
 		self.session = drmaa.Session()
 		self.session.initialize()
 		self.submitted_jobs = collections.OrderedDict()
-		self.complete = False
+		self.queued_jobs = collections.OrderedDict()
+		self.completed_jobs = collections.OrderedDict()
+		self.completed_stages = []
 		self.skipped_jobs = []
-		self.failed_stages = []
 		self.job_templates = []
 
 	def __del__(self):
@@ -178,9 +179,11 @@ class JobManager:
 
 		self.joblist = []
 		self.submitted_jobs = collections.OrderedDict()
+		self.queued_jobs = collections.OrderedDict()
+		self.completed_jobs = collections.OrderedDict()
+		self.completed_stages = []
 		self.complete = False
 		self.skipped_jobs = []
-		self.failed_stages = []
 		self.job_templates = []
 
 	def set_temp_directory(self, path):
@@ -206,13 +209,13 @@ class JobManager:
 		# Check output files
 	
 		job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, outputs=outputs)
-	
+		
 		if len(job.outputs) == 0 or not job.outputs_exist():
 			self.joblist.append(job)
 		else:
 			self.skipped_jobs.append(job)
 
-	def run(self, monitor=True, logging=True, dry=False):
+	def run(self, logging=True, dry=False):
 		"""
 		After adding jobs with add_jobs, this function executes them as a pipeline on Grid Engine.
 
@@ -225,6 +228,9 @@ class JobManager:
 		if not self.joblist and not self.skipped_jobs:
 			raise ValueError('No jobs added. Must call add_jobs prior to running jobs.')
 
+		# Make sure no dependencies that are not in the scheduled or skipped set of jobs
+		self._check_dependencies()
+
 		# Make temp directory for job files and reports
 		self._prep_temp_dir()
 
@@ -234,10 +240,19 @@ class JobManager:
 		# Sort jobs in required order by dependency
 		self.joblist = _topological_sort(self.joblist)
 
+		# Infer any implicit dependencies on sorted data
+		self._infer_all_dependencies()
+
+		# If any stages and entirely skipped, add to completed stages
+		job_stages = set([job.name for job in self.joblist])
+		skipped_stages = set([job.name for job in self.skipped_jobs])
+		self.completed_stages.extend(list(skipped_stages.difference(job_stages)))
+
 		# Submit each group of jobs as an array (or perform a dry run)
 		if dry:
 			print('DRY RUN: would skip %s jobs that already have outputs present...' % len(self.skipped_jobs))
 
+		# Build up the queue
 		for group, joblist in itertools.groupby(self.joblist, key=lambda x: x.name):
 			joblist = list(joblist)
 
@@ -247,11 +262,155 @@ class JobManager:
 				for job in joblist:
 					print(self._get_job_dry_run_message(job))
 			else:
-				joblist = self._submit_arrayjob(joblist)
-				self.submitted_jobs[group] = joblist
+				joblist = self.queued_jobs[group] = joblist
 
-		if not dry and monitor:
-			self.monitor(logging=logging)
+		if dry:
+			return
+
+		#####################################
+		# Now start scheduling jobs
+		#####################################
+		if not self.queued_jobs:
+			LOGGER.info('All %s jobs have outputs present. Nothing to do.' % len(self.skipped_jobs))
+			return
+
+		# Log skipped jobs if there are any
+		# TODO need to make sure any stages that are skipped entirely show up as completed or w/e so jobs dependent on them run
+		if len(self.skipped_jobs) > 0:
+			LOGGER.info('Skipping %s jobs because specified outputs already present...' % len(self.skipped_jobs))
+
+		last_log = None
+
+		while True:
+			# Update status of any running jobs
+			for group, joblist in self.submitted_jobs.items():
+				for job in joblist:
+					jobstatus = self._get_run_pass_fail(job)
+					job.set_run_state(jobstatus)
+					
+					if jobstatus == FINISHED:
+						job.set_exit_status(self._get_exit_status(job))
+
+			# Get any failed or finished stages
+			failed_stages = set(self._get_failed_stages())
+			self.completed_stages.extend(self._get_finished_stages())
+
+			# Move any completed jobs to completed queue and remove from scheduled
+			for stage in self.completed_stages:
+				if stage in self.submitted_jobs and stage not in self.completed_jobs:
+					self.completed_jobs[group] = self.submitted_jobs[group]
+					del self.submitted_jobs[group]
+
+			# Decide if need to schedule any new stages
+			for group, joblist in self.queued_jobs.items():
+				dependencies = joblist[0].dependencies
+
+				dependency_failed = True in [dependency in failed_stages for dependency in dependencies]
+				dependencies_completed = False not in [dependency in self.completed_stages for dependency in dependencies]
+				
+				if dependency_failed:
+					# A dependency or chained dependency has failed, move to completed with relevant status
+					exit_status = {'hasExited': 'NA',
+						'hasSignal': 'NA',
+						'terminatedSignal': 'NA',
+						'hasCoreDump': 'NA',
+						'wasAborted': 'NA',
+						'exitStatus': 'NA',
+						'resourceUsage': 'NA',
+						'completion_status': FAILED_DEPENDENCY}
+					
+					for job in joblist:
+						job.set_run_state(FINISHED)
+						job.set_exit_status(exit_status)
+
+					self.completed_jobs[group] = joblist
+					del self.queued_jobs[group]
+
+				elif dependencies_completed:
+					# All dependencies are done, schedule stage
+					self.submitted_jobs[group] = joblist
+					self._submit_arrayjob(joblist)
+					del self.queued_jobs[group]
+
+
+			# Calculate counts for logging
+			total_running = self._get_run_status_count(RUNNING)
+			total_pending = self._get_run_status_count(PENDING)
+
+			## Get which stages are running (or just show "none")
+			stages_running = self._get_stages_with_run_status(RUNNING)
+
+			if not stages_running:
+				stages_running = ['none']
+			
+			total_failed = self._get_completion_status_count(FAILED)
+			total_system_failed = self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
+			total_complete = self._get_completion_status_count(COMPLETE)
+
+			log_message = '%s jobs running (stages: %s)\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system/user failures\r' % (total_running, ','.join(stages_running), total_pending, total_complete, total_failed, total_system_failed)
+
+			# Only log when status has changed and when requested
+			if logging and (last_log != log_message):
+				last_log = log_message				
+				LOGGER.info(log_message)
+
+			time.sleep(1)
+			
+			# Check to see if all jobs have completed
+			if not self.queued_jobs:
+				break
+
+		# Write out the report of logging results
+		self.write_report(os.path.join(self.temp_directory, 'job_report.txt'))
+
+	def _infer_all_dependencies(self):
+		"""
+		Helper function to take the intitial list of jobs and get the full set of dependencies including chained dependencies.
+
+		Args:
+			stages: list of stages to consider
+
+		Returns:
+			list of Job: list of jobs that belong to or are dependent on a list of stages.
+
+		"""
+		all_stages = list(set([job.name for job in self.joblist]))
+		all_dependencies = {}
+
+		# Get the full list of other stages each stage is dependent on
+		for stage in all_stages:
+			stage_set = set([stage])
+
+			for job in self.joblist:
+				for dependency in job.dependencies:
+					if dependency in stage_set:
+						stage_set.add(job.name)
+
+			for other_stage in list(stage_set):
+				if other_stage != stage:
+					all_dependencies[other_stage] = list(set(all_dependencies.get(other_stage, []) + [stage]))
+
+		# Now fill in for all jobs
+		for job in self.joblist:
+			job.dependencies = list(set(job.dependencies + all_dependencies.get(job.name, [])))
+
+
+	def _check_dependencies(self):
+		"""
+		Make sure that there are no dependencies to stages that were never added.
+		"""
+
+		all_dependencies = []
+		for job in self.joblist:
+			all_dependencies.extend(job.dependencies)
+		all_dependencies = set(all_dependencies)
+
+		all_stages = set([job.name for job in self.skipped_jobs] + [job.name for job in self.joblist])
+
+		difference = list(all_dependencies.difference(all_stages))
+
+		if len(difference) > 0:
+			raise ValueError('Invalid dependency detected. %s listed as dependency but no stage shares this name.' % ', '.join(difference))
 
 	def _write_job_array_helper(self):
 		"""
@@ -299,8 +458,8 @@ class JobManager:
 		return '\t%s%s' % (job.command, output_string)
 
 	def _get_run_pass_fail(self, job):
-		if self.run_state and self.run_state == FINISHED:
-			return self.run_state
+		if job.run_state == FINISHED:
+			return job.run_state
 
 		try:
 			jobstatus = self.session.jobStatus(job.id)
@@ -337,14 +496,12 @@ class JobManager:
 					exit_status['completion_status'] = COMPLETE
 				else:
 					exit_status['completion_status'] = COMPLETE_MISSING_OUTPUTS
-			
-			if exit_status['wasAborted']:
+			elif exit_status['wasAborted']:
 				exit_status['completion_status'] = KILLED_BY_USER
 			elif exit_status['terminatedSignal'] or exit_status['hasCoreDump']:
 				exit_status['completion_status'] = SYSTEM_FAILED
 			else:
 				exit_status['completion_status'] = FAILED
-
 		except:
 			# In some cases where jobs are killed by user, wait will fail, so need to catch
 			exit_status = {'hasExited': 'NA',
@@ -369,8 +526,12 @@ class JobManager:
 		Returns:
 			int: stages with requested run status
 		"""
-
-		return list(set([job.name for job in self.submitted_jobs if job.run_status == value]))
+		stages = []
+		for group in self.submitted_jobs:
+			for job in self.submitted_jobs[group]:
+				if job.run_state == value:
+					stages.append(job.name)
+		return list(set(stages))
 
 	def _get_stages_with_exit_status(self, value):
 		"""
@@ -383,7 +544,12 @@ class JobManager:
 			int: stages with requested run status
 		"""
 
-		return list(set([job.name for job in self.submitted_jobs if job.exit_status and job.exit_status['completion_status'] == value]))
+		stages = []
+		for group in self.submitted_jobs:
+			for job in self.submitted_jobs[group]:
+				if job.exit_status and job.exit_status['completion_status'] == value:
+					stages.append(job.name)
+		return list(set(stages))
 
 	def _get_run_status_count(self, value):
 		"""
@@ -418,8 +584,8 @@ class JobManager:
 		"""		
 		count = 0
 
-		for group in self.submitted_jobs:
-			for job in self.submitted_jobs[group]:
+		for group in self.completed_jobs:
+			for job in self.completed_jobs[group]:
 				if job.exit_status and job.exit_status['completion_status'] == value:
 					count += 1
 		return count
@@ -434,7 +600,7 @@ class JobManager:
 			failed_jobs = []
 
 			for job in self.submitted_jobs[group]:
-				if job.exit_status and job.exit_status['completion_status'] == FAILED:
+				if job.exit_status and (job.exit_status['completion_status'] == FAILED or job.exit_status['completion_status'] == FAILED_DEPENDENCY):
 					failed_jobs.append(job)
 			
 			if len(failed_jobs) == len(self.submitted_jobs[group]):
@@ -442,128 +608,24 @@ class JobManager:
 
 		return failed_stages
 
-	def _get_dependents_of_stage(self, stages):
+	def _get_finished_stages(self):
 		"""
-		Helper function to get a list of jobs that belong to or are dependent on a list of stages.
-
-		Args:
-			stages: list of stages to consider
-
-		Returns:
-			list of Job: list of jobs that belong to or are dependent on a list of stages.
-
+		Helper function to get a list of stages that have failed entirely.
 		"""
-		stages = set(stages)
-		dependent_jobs = []
+		finished_stages = []
 
 		for group in self.submitted_jobs:
-			if group in stages:
-				for job in self.submitted_jobs[group]:
-					if not job.exit_status:
-						dependent_jobs.append(job)
-			else:
-				# Do a first pass to make sure you get all the chained dependencies
-				for job in self.submitted_jobs[group]:
-					for dependency in job.dependencies:
-						if dependency in stages:
-							stages.add(group)
+			finished_jobs = []
 
-		# Do a second pass actually flag all the jobs that need to be killed
-		for group in self.submitted_jobs:
-			for job in self.submitted_jobs[group]:	
-				if True in [dependency in stages for dependency in job.dependencies]:
-					dependent_jobs.append(job)
-
-		return dependent_jobs
-
-	def _kill_jobs(self, joblist):
-		"""
-		Helper function to kill a list of Jobs.
-		"""
-		for job in joblist:
-			try:
-				self.session.control(job.id, drmaa.JobControlAction.TERMINATE)
-			except:
-				print('WARNING: tried to kill job but does not exist (user may have deleted prior to termination): %s' % job.id)
-
-			exit_status = {'hasExited': 'NA',
-				'hasSignal': 'NA',
-				'terminatedSignal': 'NA',
-				'hasCoreDump': 'NA',
-				'wasAborted': 'NA',
-				'exitStatus': 'NA',
-				'resourceUsage': 'NA',
-				'completion_status': FAILED_DEPENDENCY}	
-
-			job.set_exit_status(exit_status)			
-
-	def monitor(self, logging=True):
-		"""
-		Once jobs have been submitted via run_jobs, monitor their progress and log to screen.
-
-		Args:
-			logging (bool): True if want to log messages to screen and False otherwise.
-
-		"""
-
-		if not self.submitted_jobs:
-			raise ValueError('No jobs have been submitted with run_jobs. Cannot monitor.')
-
-		# Log skipped jobs if there are any
-		if len(self.skipped_jobs) > 0:
-			LOGGER.info('Skipping %s jobs because specified outputs already present...' % len(self.skipped_jobs))
-
-		last_log = None
-
-		while True:
-			for group, joblist in self.submitted_jobs.items():
-				for job in joblist:
-					jobstatus = self._get_run_pass_fail(job)
-					job.set_run_state(jobstatus)
-					
-					if jobstatus == FINISHED:
-						job.set_exit_status(self._get_exit_status(job))
-
-			total_running = self._get_run_status_count(RUNNING)
-			stages_running = self._get_stages_with_run_status(RUNNING)
-			total_pending = self._get_run_status_count(PENDING)
-			total_failed = self._get_completion_status_count(FAILED)
-			total_system_failed = self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
-			total_complete = self._get_completion_status_count(COMPLETE)
-			log_message = '%s jobs running (stages: %s)\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system/user failures\r' % (total_running, ','.join(stages_running), total_pending, total_complete, total_failed, total_system_failed)
-
-			# Only log when status has changed and when requested
-			if logging and (last_log != log_message):
-				last_log = log_message				
-				LOGGER.info(log_message)
-
-			# Check if any stages have failed entirely
-			failed_stages = self._get_failed_stages()
-			new_failed_stages = [stage for stage in failed_stages if stage not in self.failed_stages]
-
-			# Kill dependent stages of any entirely failed stages
-			if new_failed_stages:
-				jobs_to_kill = self._get_dependents_of_stage(new_failed_stages)
-				killed_stages = list(set([job.name for job in jobs_to_kill]))
-				
-				self.failed_stages.extend(killed_stages + new_failed_stages)
-
-				if jobs_to_kill:
-					LOGGER.info('Stages failed: %s; Killing dependent stages: %s' % (', '.join(new_failed_stages), ', '.join(killed_stages)))
-				else:
-					LOGGER.info('Stages failed: %s; no other stages dependent.' % ', '.join(new_failed_stages))
-
-				self._kill_jobs(jobs_to_kill)
-
-			time.sleep(1)
+			for job in self.submitted_jobs[group]:
+				if job.run_state == FINISHED:
+					finished_jobs.append(job)
 			
-			# Check to see if all jobs have completed
-			if total_running + total_pending == 0:
-				break
+			if len(finished_jobs) == len(self.submitted_jobs[group]):
+				finished_stages.append(group)
 
-		# Write out the report of logging results
-		self.complete = True
-		self.write_report(os.path.join(self.temp_directory, 'job_report.txt'))
+		return finished_stages
+
 
 	def write_report(self, filename):
 		"""
@@ -579,14 +641,14 @@ class JobManager:
 
 		"""
 
-		if not self.complete:
-			raise ValueError('Job status unknown. Must call monitor() function prior to writing job report.')
+		if not self.completed_jobs:
+			raise ValueError('No completed jobs to report. Make sure to call run() function prior to writing report.')
 
 		with open(filename, 'w') as report:
 			report.write('\t'.join(['jobid', 'stage', 'status', 'was_aborted', 'exit_status', 'memory_request', 'max_vmem_gb', 'duration_hms', 'log_file', 'command']) + '\n')
 			
 			# Report on both scheduled and skipped jobs
-			report_jobs = copy.deepcopy(self.submitted_jobs)
+			report_jobs = copy.deepcopy(self.completed_jobs)
 			report_jobs['skipped'] = self.skipped_jobs
 
 			for group in report_jobs:
@@ -598,7 +660,7 @@ class JobManager:
 					memory_request = str(job.memory)
 
 					# If job was not scheduled, just put in dummy entry
-					if not job_id:
+					if not job_id and not job.exit_status:
 						aborted = 'NA'
 						completion_status = SKIPPED
 						exit_status = 'NA'
