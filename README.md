@@ -1,9 +1,9 @@
 # easygrid
-Many pipelining tools such as `Queue`, `snakemake`, `ruffus`, etc. provide powerful tools for specifying inputs and outputs of a tool and automating inference of dependencies, and I use some of them quite a bit for large pipelines.
+Many pipelining tools such as `Queue`, `snakemake`, `ruffus`, etc. provide ways to completely specify inputs and outputs of each command in a pipeline. This is very powerful and allows automated inference of dependencies, job monitoring, job reporting, and smart restart (much like `Make`).
 
-I have found that for many small projects specifying all inputs and outputs becomes quite cumbersome depending on the task at hand and. I wanted something easier to use that still retains some of the benefits of the tools above.
+I personally found that operating within the available frameworks became quite cumbersome for small projects/pipelines, so my activation energy for using these tools was quite high. I wanted something easier to use for small to moderate size projects that still retains some of the benefits of the tools above.
 
-`easygrid` allows you to add commands and give them a stage name and (optionally) a set of expected output files. You can make specify dependencies between stages and easygrid will figure out which order to execute them, monitor their status on grid engine, and then report back detailed statistics on their completion status and resource usage.
+`easygrid` allows you to add commands and give them a stage name and (optionally) a set of expected output files. You can specify dependencies between stages and easygrid will figure out which order to execute them, monitor their status on grid engine, and then report back detailed statistics on their completion status and resource usage.
 
 # Example
 Let's say you have a list of fastq files and you want to align them all to a reference, compute basic statistics on each one, and then make some plots all in parallel:
@@ -33,7 +33,7 @@ for fastq in fastq_list:
 pipeline.run()
 ```
 
-By default `run_jobs` will log progress and a report will be saved to `.easygrid/job_report.txt` with information about completion status, runtime, memory usage, etc. Log files from all jobs will also be saved to this directory.
+By default `run` will log progress and a report will be saved to `.easygrid/job_report.txt` with information about completion status, runtime, memory usage, etc. Log files from all jobs will also be saved to this directory.
 
 Specifying outputs of each job with the `outputs` argument is optional and need not be complete, these are just files that `easygrid` will look for when the job completes if you would like as a basic check. `easygrid` will also skip jobs and not re-run them if their outputs are already present.
 
@@ -60,3 +60,9 @@ After calling the `run` function, `easygrid` will log basic information about th
 ```
 [EASYGRID]: 2017-08-09 09:44:34,360: 9 jobs running (stages: align_reads)      0 jobs pending  33 jobs completed    1 jobs failed    0 system/user failures
 ```
+
+# Dry Run
+You may also provide `dry=True` to the `run` function and a text description of jobs that would be run will print to the screen. This "dry run" feature is handy for checking that everything is set up correctly before executing the pipeline.
+
+# Cluster compatibility
+`easygrid` is currently set up to function on GridEngine platorms. I do not currently have any plans to make it compatible with other platforms like SLURM or LSF, but might consider if there is interest.
