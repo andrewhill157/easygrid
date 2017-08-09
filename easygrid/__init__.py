@@ -10,8 +10,31 @@ import datetime
 from glob import glob
 import stat
 import copy
-import array_job_helper
 import collections
+
+ARRAY_JOB_SCRIPT = """
+#!/bin/bash
+#$ -S /bin/bash
+#$ -cwd
+#$ -V
+
+if [ -z "$SGE_TASK_ID" ] ; then
+    echo "WARNING: NO $SGE_TASK_ID"
+    exit 1
+fi
+
+CMD_FILE=$1
+
+COMMAND=$(head -n $SGE_TASK_ID $CMD_FILE | tail -n 1)
+
+if [ -n "$COMMAND" ] ; then
+    $COMMAND
+else
+    echo "command \"$COMMAND\"not found"
+fi
+
+# $Id: generic_array_job.csh,v 1.1 2006/05/16 14:11:32 sbender Exp $
+"""
 
 # Set up a basic logger
 LOGGER = logging.getLogger('something')
@@ -280,7 +303,7 @@ class JobManager:
 			LOGGER.info('Skipping %s jobs because specified outputs already present...' % len(self.skipped_jobs))
 
 		last_log = None
-
+		
 		while True:
 			# Update status of any running jobs
 			for group, joblist in self.submitted_jobs.items():
@@ -294,12 +317,13 @@ class JobManager:
 			# Get any failed or finished stages
 			failed_stages = set(self._get_failed_stages())
 			self.completed_stages.extend(self._get_finished_stages())
+			self.completed_stages = list(set(self.completed_stages))
 
 			# Move any completed jobs to completed queue and remove from scheduled
 			for stage in self.completed_stages:
 				if stage in self.submitted_jobs and stage not in self.completed_jobs:
-					self.completed_jobs[group] = self.submitted_jobs[group]
-					del self.submitted_jobs[group]
+					self.completed_jobs[stage] = self.submitted_jobs[stage]
+					del self.submitted_jobs[stage]
 
 			# Decide if need to schedule any new stages
 			for group, joblist in self.queued_jobs.items():
@@ -417,7 +441,7 @@ class JobManager:
 		Writes a bash script to temp folder to facilitate array job submission
 		"""
 		with open(self._get_job_array_helper_path(), 'w') as helper_script:
-			helper_script.write(array_job_helper.ARRAY_JOB_SCRIPT)
+			helper_script.write(ARRAY_JOB_SCRIPT)
 			st = os.stat(self._get_job_array_helper_path())
 			os.chmod(self._get_job_array_helper_path(), st.st_mode | stat.S_IEXEC)
 
@@ -588,6 +612,12 @@ class JobManager:
 			for job in self.completed_jobs[group]:
 				if job.exit_status and job.exit_status['completion_status'] == value:
 					count += 1
+
+		for group in self.submitted_jobs:
+			for job in self.submitted_jobs[group]:
+ 				if job.exit_status and job.exit_status['completion_status'] == value:
+ 					count += 1
+
 		return count
 
 	def _get_failed_stages(self):
@@ -682,7 +712,7 @@ class JobManager:
 						exit_status = str(job_exit_info['exitStatus'])
 						max_vmem_gb = str(float(job_exit_info['resourceUsage']['maxvmem']) / 10e9)
 						duration = str(datetime.timedelta(milliseconds=int(float(job_exit_info['resourceUsage']['end_time']) - float(job_exit_info['resourceUsage']['start_time']))))
-						log_file = ','.join(glob(os.path.join(self.temp_directory, '*%s*' % job.id)))
+						log_file = ','.join(glob(os.path.join(self.temp_directory, '*%s' % job.id)))
 
 					# Construct output
 					entries = [str(job_id), job.name, completion_status, aborted, exit_status, memory_request, max_vmem_gb, duration, log_file, command]
