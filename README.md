@@ -25,7 +25,7 @@ for fastq in fastq_list:
     align_command = 'align_reads.sh %s %s %s' % (fastq, reference, bam_file)
     secondary_analysis_command = 'python analyze_reads.py %s %s' % (bam_file, secondary_results)
     plot_command = 'Rscript plot_data.R %s %s' % (secondary_results, plot_name)
-   
+
     pipeline.add(align_command, name='align', outputs=[bam_file], memory='5G')
     pipeline.add(secondary_analysis_command, name='secondary_analysis', dependencies=['align'], outputs=[secondary_results])
     pipeline.add(plot_command, name='plot', dependencies=['secondary_analysis'], outputs=[plot_name])
@@ -55,10 +55,10 @@ Specifying outputs of each job with the `outputs` argument is optional and need 
 
 # Logging
 
-After calling the `run` function, `easygrid` will log basic information about the jobs that are running, pending, completed, failed, and system failed.
+After calling the `run` function, `easygrid` will log basic information about the jobs that are running, scheduled but not running yet (qw), completed, and failed.
 
 ```
-[EASYGRID]: 2017-08-09 09:44:34,360: 9 jobs running (stages: align_reads)      0 jobs pending  33 jobs completed    1 jobs failed    0 system/user failures
+[EASYGRID]: 2017-08-09 09:44:34,360: 9 jobs running (stages: align_reads)	0 jobs qw       0 jobs pending     0 jobs completed        0 jobs failed
 ```
 
 # Dry Run
