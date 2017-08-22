@@ -176,7 +176,7 @@ class JobManager:
 		self.submitted_jobs = collections.OrderedDict()
 		self.queued_jobs = collections.OrderedDict()
 		self.completed_jobs = collections.OrderedDict()
-		self.completed_stages = []
+		self.completed_stages = set()
 		self.skipped_jobs = []
 		self.job_templates = []
 
@@ -204,7 +204,7 @@ class JobManager:
 		self.submitted_jobs = collections.OrderedDict()
 		self.queued_jobs = collections.OrderedDict()
 		self.completed_jobs = collections.OrderedDict()
-		self.completed_stages = []
+		self.completed_stages = set()
 		self.complete = False
 		self.skipped_jobs = []
 		self.job_templates = []
@@ -237,6 +237,7 @@ class JobManager:
 			self.joblist.append(job)
 		else:
 			self.skipped_jobs.append(job)
+			self.completed_stages.add(name)
 
 	def run(self, logging=True, dry=False):
 		"""
@@ -267,9 +268,8 @@ class JobManager:
 		self._infer_all_dependencies()
 
 		# If any stages and entirely skipped, add to completed stages
-		job_stages = set([job.name for job in self.joblist])
 		skipped_stages = set([job.name for job in self.skipped_jobs])
-		self.completed_stages.extend(list(skipped_stages.difference(job_stages)))
+		self.completed_stages.update(skipped_stages)
 
 		# Submit each group of jobs as an array (or perform a dry run)
 		if dry:
@@ -300,7 +300,6 @@ class JobManager:
 			return
 
 		# Log skipped jobs if there are any
-		# TODO need to make sure any stages that are skipped entirely show up as completed or w/e so jobs dependent on them run
 		if len(self.skipped_jobs) > 0:
 			LOGGER.info('Skipping %s jobs because specified outputs already present...' % len(self.skipped_jobs))
 
@@ -318,8 +317,7 @@ class JobManager:
 
 			# Get any failed or finished stages
 			failed_stages = set(self._get_failed_stages())
-			self.completed_stages.extend(self._get_finished_stages())
-			self.completed_stages = list(set(self.completed_stages))
+			self.completed_stages.update(self._get_finished_stages())
 
 			# Move any completed jobs to completed queue and remove from scheduled
 			for stage in self.completed_stages:
@@ -362,7 +360,8 @@ class JobManager:
 
 			# Calculate counts for logging
 			total_running = self._get_run_status_count(RUNNING)
-			total_pending = self._get_run_status_count(PENDING)
+			total_qw = self._get_run_status_count(PENDING)
+			total_pending = len(self.queued_jobs.keys())
 
 			## Get which stages are running (or just show "none")
 			stages_running = self._get_stages_with_run_status(RUNNING)
@@ -370,11 +369,10 @@ class JobManager:
 			if not stages_running:
 				stages_running = ['none']
 
-			total_failed = self._get_completion_status_count(FAILED)
-			total_system_failed = self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
-			total_complete = self._get_completion_status_count(COMPLETE)
+			total_failed = self._get_completion_status_count(FAILED) + self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
+			total_complete = self._get_completion_status_count(COMPLETE) + self._get_completion_status_count(SKIPPED)
 
-			log_message = '%s jobs running (stages: %s)\t%s jobs pending\t%s jobs completed\t%s jobs failed\t %s system/user failures\r' % (total_running, ','.join(stages_running), total_pending, total_complete, total_failed, total_system_failed)
+			log_message = '%s jobs running (stages: %s)\t%s jobs qw\t%s jobs pending\t%s jobs completed\t%s jobs failed\r' % (total_running, ','.join(stages_running), total_qw, total_pending, total_complete, total_failed)
 
 			# Only log when status has changed and when requested
 			if logging and (last_log != log_message):
@@ -384,7 +382,7 @@ class JobManager:
 			time.sleep(1)
 
 			# Check to see if all jobs have completed
-			if not self.queued_jobs:
+			if not self.queued_jobs and not self.submitted_jobs:
 				break
 
 		# Write out the report of logging results
@@ -674,7 +672,7 @@ class JobManager:
 
 		"""
 
-		if not self.completed_jobs:
+		if not self.completed_jobs and not self.skipped_jobs:
 			raise ValueError('No completed jobs to report. Make sure to call run() function prior to writing report.')
 
 		with open(filename, 'w') as report:
