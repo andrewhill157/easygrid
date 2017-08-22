@@ -390,15 +390,16 @@ class JobManager:
 			log_message = '%s jobs running (stages: %s)\t%s jobs qw\t%s jobs pending\t%s jobs completed\t%s jobs failed\r' % (total_running, ','.join(stages_running), total_qw, total_pending, total_complete, total_failed)
 
 			# Only log when status has changed and when requested
-			if logging and (last_log != log_message):
-				last_log = log_message
+			if logging and last_log and (last_log != log_message):
 				LOGGER.info(log_message)
 
-			time.sleep(1)
+			last_log = log_message
 
 			# Check to see if all jobs have completed
 			if not self.queued_jobs and not self.submitted_jobs:
 				break
+
+			time.sleep(1)
 
 		# Write out the report of logging results
 		self.write_report(os.path.join(self.temp_directory, 'job_report.txt'))
