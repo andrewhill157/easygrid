@@ -134,7 +134,7 @@ class Job:
 		self.id = None
 		self.exit_status = {}
 		self.run_state = None
-	
+
 	def set_id(self, id):
 		self.id = id
 
@@ -160,7 +160,7 @@ class JobManager:
 	Class for constructing and executing simple pipelines of jobs on distributed computing systems
 	where different stages of the pipeline are dependent on one another.
 	"""
-	
+
 	def __init__(self, temp_directory='.easygrid'):
 		"""
 		Constructor
@@ -223,16 +223,16 @@ class JobManager:
 		Args:
 			command (str): Command to be run in terminal for this job.
 			name (str): a name to identify the stage of the pipeline this job belongs to
-			memory (str): memory request for job such as '1G' 
+			memory (str): memory request for job such as '1G'
 			walltime (str): wall time request such as '100:00:00'
 			dependencies (list of str): a list of names for other stages that this job is dependent on.
 			outputs (list of str): a list of output files to check for before scheduling (if all are present, job not scheduled)
 
 		"""
 		# Check output files
-	
+
 		job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, outputs=outputs)
-		
+
 		if len(job.outputs) == 0 or not job.outputs_exist():
 			self.joblist.append(job)
 		else:
@@ -282,8 +282,10 @@ class JobManager:
 			if dry:
 				print(self._get_group_dry_run_message(group, joblist))
 
-				for job in joblist:
+				for job in joblist[0:10]:
 					print(self._get_job_dry_run_message(job))
+				if len(joblist) > 10:
+					print('... (%s jobs not shown)' % (len(joblist) - 10))
 			else:
 				joblist = self.queued_jobs[group] = joblist
 
@@ -303,14 +305,14 @@ class JobManager:
 			LOGGER.info('Skipping %s jobs because specified outputs already present...' % len(self.skipped_jobs))
 
 		last_log = None
-		
+
 		while True:
 			# Update status of any running jobs
 			for group, joblist in self.submitted_jobs.items():
 				for job in joblist:
 					jobstatus = self._get_run_pass_fail(job)
 					job.set_run_state(jobstatus)
-					
+
 					if jobstatus == FINISHED:
 						job.set_exit_status(self._get_exit_status(job))
 
@@ -326,12 +328,13 @@ class JobManager:
 					del self.submitted_jobs[stage]
 
 			# Decide if need to schedule any new stages
-			for group, joblist in self.queued_jobs.items():
+			for group in list(self.queued_jobs.keys()):
+				joblist = self.queued_jobs[group]
 				dependencies = joblist[0].dependencies
 
 				dependency_failed = True in [dependency in failed_stages for dependency in dependencies]
 				dependencies_completed = False not in [dependency in self.completed_stages for dependency in dependencies]
-				
+
 				if dependency_failed:
 					# A dependency or chained dependency has failed, move to completed with relevant status
 					exit_status = {'hasExited': 'NA',
@@ -342,7 +345,7 @@ class JobManager:
 						'exitStatus': 'NA',
 						'resourceUsage': 'NA',
 						'completion_status': FAILED_DEPENDENCY}
-					
+
 					for job in joblist:
 						job.set_run_state(FINISHED)
 						job.set_exit_status(exit_status)
@@ -366,7 +369,7 @@ class JobManager:
 
 			if not stages_running:
 				stages_running = ['none']
-			
+
 			total_failed = self._get_completion_status_count(FAILED)
 			total_system_failed = self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
 			total_complete = self._get_completion_status_count(COMPLETE)
@@ -375,11 +378,11 @@ class JobManager:
 
 			# Only log when status has changed and when requested
 			if logging and (last_log != log_message):
-				last_log = log_message				
+				last_log = log_message
 				LOGGER.info(log_message)
 
 			time.sleep(1)
-			
+
 			# Check to see if all jobs have completed
 			if not self.queued_jobs:
 				break
@@ -582,7 +585,7 @@ class JobManager:
 		Args:
 			value (str): value to enumerate
 
-		Returns: 
+		Returns:
 			int: count of jobs with run_status == value
 
 		"""
@@ -602,10 +605,10 @@ class JobManager:
 		Args:
 			value (str): value to enumerate
 
-		Returns: 
+		Returns:
 			int: count of jobs with completion_status == value
-			
-		"""		
+
+		"""
 		count = 0
 
 		for group in self.completed_jobs:
@@ -632,7 +635,7 @@ class JobManager:
 			for job in self.submitted_jobs[group]:
 				if job.exit_status and (job.exit_status['completion_status'] == FAILED or job.exit_status['completion_status'] == FAILED_DEPENDENCY):
 					failed_jobs.append(job)
-			
+
 			if len(failed_jobs) == len(self.submitted_jobs[group]):
 				failed_stages.append(group)
 
@@ -650,7 +653,7 @@ class JobManager:
 			for job in self.submitted_jobs[group]:
 				if job.run_state == FINISHED:
 					finished_jobs.append(job)
-			
+
 			if len(finished_jobs) == len(self.submitted_jobs[group]):
 				finished_stages.append(group)
 
@@ -676,7 +679,7 @@ class JobManager:
 
 		with open(filename, 'w') as report:
 			report.write('\t'.join(['jobid', 'stage', 'status', 'was_aborted', 'exit_status', 'memory_request', 'max_vmem_gb', 'duration_hms', 'log_file', 'command']) + '\n')
-			
+
 			# Report on both scheduled and skipped jobs
 			report_jobs = copy.deepcopy(self.completed_jobs)
 			report_jobs['skipped'] = self.skipped_jobs
@@ -684,7 +687,7 @@ class JobManager:
 			for group in report_jobs:
 				jobs = sorted(report_jobs[group], key=lambda x: x.exit_status.get('completion_status', x.name))
 				for job in jobs:
-					
+
 					job_id = job.id
 					command = str(job.command)
 					memory_request = str(job.memory)
@@ -737,13 +740,13 @@ class JobManager:
 		"""
 		if len(sublist) == 0:
 			raise ValueError('No commands specified. Must have at least one command.')
-			
+
 		# Sanity check user specified dependencies for this stage
 		dependencies = list(set([tuple(job.dependencies) for job in sublist]))
 
 		if len(dependencies) != 1:
 			raise ValueError('Multiple dependencies specified for same jobname: %s.' % str(dependencies))
-	
+
 		# Make string for native spec reflecting dependencies
 		if dependencies[0]:
 			dependency_string = ' -hold_jid %s' % ','.join(dependencies[0])
@@ -761,7 +764,7 @@ class JobManager:
 		temp.write('\n'.join(commands) + '\n')
 		temp.close()
 
-		jt = self.session.createJobTemplate()	
+		jt = self.session.createJobTemplate()
 		jt.remoteCommand = '%s %s' % (self._get_job_array_helper_path(), file_name)
 		jt.jobName = sublist[0].name
 		jt.nativeSpecification = nativeSpecification
@@ -774,5 +777,5 @@ class JobManager:
 
 		# Add job templates
 		self.job_templates.append(jt)
-		
+
 		return sublist
