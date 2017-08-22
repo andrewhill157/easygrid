@@ -125,6 +125,19 @@ class Job:
 	"""
 
 	def __init__(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', outputs = []):
+
+		if isinstance(dependencies, str):
+			dependencies = [dependencies]
+
+		if isinstance(outputs, str):
+			outputs = [outputs]
+
+		if not isinstance(memory, str):
+			raise ValueError('Memory request for job is not a string: %s. Must be a string such as "5G", where G indicates GB.' % memory)
+
+		if not isinstance(walltime, str):
+			raise ValueError('Walltime request for job is not a string: %s. Must be a string such as "100:00:00" for units in hours:minutes:seconds.' % walltime)
+
 		self.command = command
 		self.memory = memory
 		self.walltime = walltime
