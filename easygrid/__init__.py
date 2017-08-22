@@ -370,7 +370,7 @@ class JobManager:
 				stages_running = ['none']
 
 			total_failed = self._get_completion_status_count(FAILED) + self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
-			total_complete = self._get_completion_status_count(COMPLETE) + self._get_completion_status_count(SKIPPED)
+			total_complete = self._get_completion_status_count(COMPLETE)
 
 			log_message = '%s jobs running (stages: %s)\t%s jobs qw\t%s jobs pending\t%s jobs completed\t%s jobs failed\r' % (total_running, ','.join(stages_running), total_qw, total_pending, total_complete, total_failed)
 
