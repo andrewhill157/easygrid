@@ -237,7 +237,6 @@ class JobManager:
 			self.joblist.append(job)
 		else:
 			self.skipped_jobs.append(job)
-			self.completed_stages.add(name)
 
 	def run(self, logging=True, dry=False):
 		"""
@@ -268,8 +267,9 @@ class JobManager:
 		self._infer_all_dependencies()
 
 		# If any stages and entirely skipped, add to completed stages
+		queued_stages = set([job.name for job in self.joblist])
 		skipped_stages = set([job.name for job in self.skipped_jobs])
-		self.completed_stages.update(skipped_stages)
+		self.completed_stages.update(skipped_stages.difference(queued_stages))
 
 		# Submit each group of jobs as an array (or perform a dry run)
 		if dry:
