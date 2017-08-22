@@ -246,6 +246,9 @@ class JobManager:
 			Prints status to screen periodically as jobs change status.
 			Saves job report to temp directory on completion.
 
+		Returns:
+			bool: True if no failed jobs and False otherwise
+
 		"""
 		# Error if no jobs added
 		if not self.joblist and not self.skipped_jobs:
@@ -297,7 +300,6 @@ class JobManager:
 		#####################################
 		if not self.queued_jobs:
 			LOGGER.info('All %s jobs have outputs present. Nothing to do.' % len(self.skipped_jobs))
-			return
 
 		# Log skipped jobs if there are any
 		if len(self.skipped_jobs) > 0:
@@ -369,7 +371,7 @@ class JobManager:
 			if not stages_running:
 				stages_running = ['none']
 
-			total_failed = self._get_completion_status_count(FAILED) + self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER)
+			total_failed = self._get_completion_status_count(FAILED) + self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(KILLED_BY_USER) + self._get_completion_status_count(COMPLETE_MISSING_OUTPUTS)
 			total_complete = self._get_completion_status_count(COMPLETE)
 
 			log_message = '%s jobs running (stages: %s)\t%s jobs qw\t%s jobs pending\t%s jobs completed\t%s jobs failed\r' % (total_running, ','.join(stages_running), total_qw, total_pending, total_complete, total_failed)
@@ -387,6 +389,8 @@ class JobManager:
 
 		# Write out the report of logging results
 		self.write_report(os.path.join(self.temp_directory, 'job_report.txt'))
+
+		return total_failed == 0
 
 	def _infer_all_dependencies(self):
 		"""
