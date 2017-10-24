@@ -11,6 +11,7 @@ from glob import glob
 import stat
 import copy
 import collections
+import gzip
 
 ARRAY_JOB_SCRIPT = """
 #!/bin/bash
@@ -59,6 +60,9 @@ FAILED_DEPENDENCY = 'FAILED_DEPENDENCY'
 SYSTEM_FAILED = 'SYSTEM_FAILED'
 COMPLETE_MISSING_OUTPUTS = 'COMPLETE_MISSING_OUTPUTS'
 
+# Buffer between job completion and completion status check to prevent race conditions
+COMPLETION_OUTPUT_CHECK_DELAY = 10000 # 10 seconds (time in ms)
+
 # Table to translate common error codes into more useful text
 exit_codes = {
 	127: 'command not found',
@@ -88,6 +92,98 @@ def swap_ext(filename, old_extension, new_extension):
         raise ValueError('Old extension not found in filename: %s' % old_extension)
 
     return filename.replace(old_extension, new_extension)
+
+
+def mkdir(directory):
+    """
+    Simple utility function to make directories that don't already exist.
+
+    Args:
+        directory (str): directory to make
+
+    Modifies:
+        directory is made on disk unless it already exists
+
+    """
+    if not os.path.exists(directory):
+        os.mkdir(directory)
+
+def check_exists(path):
+    """
+    Utility function to check if a file exists and throw and error if not.
+
+    Args:
+        path (str): path to check
+
+    Raises:
+        ValueError if path does not exist.
+
+    """
+    if not os.path.exists(path):
+        raise ValueError('Path provided as input was not found: %s' % path)
+
+def read_delim(file_path, header=True, columns=None, types=None, sep='\t'):
+    """
+    Utility function for parsing delimited files into iterators of dictionaries with keys as column names.
+
+    Args:
+        file_path (str): path to file
+        header (bool): True if column names are present in file and false otherwise
+        columns (list): List of keys to use for dictionaries as column names
+        types (dict): a dict with column names as keys and conversion functions such as int, float, etc. as values
+        sep (str): delimiter used in file
+
+    Yields:
+        dict: yields dict where keys are column names and values are values for a given row in file
+
+    """
+    # Choose gz open if needed
+    if file_path.endswith('.gz'):
+        open_function=gzip.open
+    else:
+        open_function=open
+
+    # Vlalidate columns
+    if columns and not isinstance(columns, list):
+        raise ValueError('columns argument must be a list.')
+    
+    # Validate types and column headers
+    if types and not isinstance(types, dict):
+        raise ValueError('types argument must be a dict with column names as keys and a conversion function as values (such as str, int, float)')
+
+    fh = open_function(file_path)
+
+    if header:
+        if not columns:
+            columns = fh.next().strip().split(sep)
+        else:
+            fh.next()
+    elif not columns:
+        raise ValueError('Header argument specified as False, so must provide column names.')
+
+    if types:
+        typed_columns = set(types.keys())
+        if False in [column in typed_columns for column in columns]:
+            raise ValueError('Provided a type for %s column in types argument, but column does not appear in file or columns argument.' % column)
+
+    # Parse file
+    for line_number,line in enumerate(fh):
+        entries = line.strip().split(sep)
+        
+        if len(entries) != len(columns):
+            raise ValueError('Length of entries: %s, not equal to length of columns %s, in file: %s, line number %s' % (len(entries), len(columns), file_path, line_number))
+
+        entries_dict = dict(zip(columns, entries))
+	
+        if types:
+            for column in types:
+                try:
+                    entries_dict[column] = types[column](entries_dict[column])
+                except ValueError:
+                    raise ValueError('Type conversion of column %s failed on line %s' % (column, line_number))
+
+        yield entries_dict
+
 
 def _topological_sort(joblist):
     """
@@ -125,6 +221,8 @@ class Job:
 	"""
 
 	def __init__(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', outputs = []):
+		if not isinstance(name, str):
+			raise ValueError('Provided job name must be a string, but found: %s' % name)
 
 		if isinstance(dependencies, str):
 			dependencies = [dependencies]
@@ -134,6 +232,9 @@ class Job:
 
 		if not isinstance(memory, str):
 			raise ValueError('Memory request for job is not a string: %s. Must be a string such as "5G", where G indicates GB.' % memory)
+
+		if not re.search('[0-9]+[kKmMgG]$', memory):
+			raise ValueError('Invalid memory request: %s, valid multipliers are k, m, or g (case insensitive).' % memory)
 
 		if not isinstance(walltime, str):
 			raise ValueError('Walltime request for job is not a string: %s. Must be a string such as "100:00:00" for units in hours:minutes:seconds.' % walltime)
@@ -251,7 +352,7 @@ class JobManager:
 		else:
 			self.skipped_jobs.append(job)
 
-	def run(self, logging=True, dry=False):
+	def run(self, queue=None, logging=True, dry=False):
 		"""
 		After adding jobs with add_jobs, this function executes them as a pipeline on Grid Engine.
 
@@ -369,7 +470,7 @@ class JobManager:
 				elif dependencies_completed:
 					# All dependencies are done, schedule stage
 					self.submitted_jobs[group] = joblist
-					self._submit_arrayjob(joblist)
+					self._submit_arrayjob(joblist, queue)
 					del self.queued_jobs[group]
 
 
@@ -534,6 +635,14 @@ class JobManager:
 				'exitStatus': exit_codes.get(exit_status.exitStatus, 'unknown exit code: %s' % exit_status.exitStatus),
 				'resourceUsage': exit_status.resourceUsage}
 
+			# Give some buffer between when jobs have finished and when check for output files (tries to prevent race)
+			completion_time = int(float(exit_status['resourceUsage']['end_time']))
+			time_since_completion = int(float((time.time() * 1000) - completion_time))
+
+			if time_since_completion < COMPLETION_OUTPUT_CHECK_DELAY:
+				time.sleep((COMPLETION_OUTPUT_CHECK_DELAY - time_since_completion) / 1000)
+
+			# Now check exit status
 			if exit_status['exitStatus'] == 0:
 				if job.outputs_exist():
 					exit_status['completion_status'] = COMPLETE
@@ -545,7 +654,7 @@ class JobManager:
 				exit_status['completion_status'] = SYSTEM_FAILED
 			else:
 				exit_status['completion_status'] = FAILED
-		except:
+		except Exception as e:
 			# In some cases where jobs are killed by user, wait will fail, so need to catch
 			exit_status = {'hasExited': 'NA',
 				'hasSignal': 'NA',
@@ -743,7 +852,7 @@ class JobManager:
 		"""
 		return os.path.join(self.temp_directory, 'job_array_helper.csh')
 
-	def _submit_arrayjob(self, sublist):
+	def _submit_arrayjob(self, sublist, queue=None):
 		"""
 		Submits a list of commands as a job array.
 
@@ -763,14 +872,11 @@ class JobManager:
 		if len(dependencies) != 1:
 			raise ValueError('Multiple dependencies specified for same jobname: %s.' % str(dependencies))
 
-		# Make string for native spec reflecting dependencies
-		if dependencies[0]:
-			dependency_string = ' -hold_jid %s' % ','.join(dependencies[0])
-		else:
-			dependency_string = ''
-
 		# Construct native spec for job
-		nativeSpecification = '-V -cwd -e %s -o %s -l mfree=%s,h_rt=%s%s' % (self.temp_directory, self.temp_directory, sublist[0].memory, sublist[0].walltime, dependency_string)
+		nativeSpecification = '-V -cwd -e %s -o %s -l mfree=%s,h_rt=%s' % (self.temp_directory, self.temp_directory, sublist[0].memory, sublist[0].walltime)
+		
+		if queue:
+			nativeSpecification += ' -q %s' % queue
 
 		# Submit job array of all commands in this stage
 		commands = [job.command for job in sublist]
