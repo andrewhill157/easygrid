@@ -61,7 +61,7 @@ SYSTEM_FAILED = 'SYSTEM_FAILED'
 COMPLETE_MISSING_OUTPUTS = 'COMPLETE_MISSING_OUTPUTS'
 
 # Buffer between job completion and completion status check to prevent race conditions
-COMPLETION_OUTPUT_CHECK_DELAY = 10000 # 10 seconds (time in ms)
+COMPLETION_OUTPUT_CHECK_DELAY = 20000 # 10 seconds (time in ms)
 
 # Table to translate common error codes into more useful text
 exit_codes = {
@@ -758,7 +758,7 @@ class JobManager:
 			failed_jobs = []
 
 			for job in self.submitted_jobs[group]:
-				if job.exit_status and (job.exit_status['completion_status'] == FAILED or job.exit_status['completion_status'] == FAILED_DEPENDENCY):
+				if job.exit_status and (job.exit_status['completion_status'] == FAILED or job.exit_status['completion_status'] == COMPLETE_MISSING_OUTPUTS or job.exit_status['completion_status'] == FAILED_DEPENDENCY):
 					failed_jobs.append(job)
 
 			if len(failed_jobs) == len(self.submitted_jobs[group]):
