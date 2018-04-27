@@ -16,8 +16,10 @@ import gzip
 ARRAY_JOB_SCRIPT = """
 #!/bin/bash
 #$ -S /bin/bash
+#$ -shell y
 #$ -cwd
 #$ -V
+#$ -l h_rt=24:00:00
 
 if [ -z "$SGE_TASK_ID" ] ; then
     echo "WARNING: NO $SGE_TASK_ID"
