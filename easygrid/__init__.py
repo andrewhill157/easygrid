@@ -2,10 +2,9 @@ import drmaa
 import os
 import logging
 import time
-import sys
+import re
 import itertools
 import tempfile
-import re
 import datetime
 from glob import glob
 import stat
@@ -15,11 +14,6 @@ import gzip
 
 ARRAY_JOB_SCRIPT = """
 #!/bin/bash
-#$ -S /bin/bash
-#$ -shell y
-#$ -cwd
-#$ -V
-#$ -l h_rt=24:00:00
 
 if [ -z "$SGE_TASK_ID" ] ; then
     echo "WARNING: NO $SGE_TASK_ID"
@@ -29,9 +23,8 @@ fi
 CMD_FILE=$1
 
 COMMAND=$(head -n $SGE_TASK_ID $CMD_FILE | tail -n 1)
-
 if [ -n "$COMMAND" ] ; then
-    $COMMAND
+    eval " $COMMAND"
 else
     echo "command \"$COMMAND\"not found"
 fi
@@ -63,7 +56,7 @@ SYSTEM_FAILED = 'SYSTEM_FAILED'
 COMPLETE_MISSING_OUTPUTS = 'COMPLETE_MISSING_OUTPUTS'
 
 # Buffer between job completion and completion status check to prevent race conditions
-COMPLETION_OUTPUT_CHECK_DELAY = 20000  # 20 seconds (time in ms)
+COMPLETION_OUTPUT_CHECK_DELAY = 30000  # 30 seconds (time in ms)
 
 # Table to translate common error codes into more useful text
 exit_codes = {
@@ -196,6 +189,21 @@ def touch(path):
     """
     with open(path, 'a'):
         os.utime(path, None)
+
+
+def command_to_oneliner(command):
+    """
+    Converts a command to a one-liner to it is can be used in job array.
+    """
+    # Fix accidental spaces after backslash
+    command = re.sub('\\\\[\s]+\n', '', command)
+
+    # Split into lines and get rid of empty lines
+    lines = [x.strip() for x in command.strip().split('\n')]
+    lines = [line for line in lines if '' is not line]
+
+    oneliner = '; '.join(lines)
+    return oneliner
 
 
 def _topological_sort(joblist):
@@ -384,6 +392,7 @@ class JobManager:
                 outputs (list of str): a list of output files to check for before scheduling (if all are present, job not scheduled)
 
         """
+        command = command_to_oneliner(command)
         job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, outputs=outputs)
 
         if len(job.outputs) == 0 or not job.outputs_exist() or not job.done_files_exist():
