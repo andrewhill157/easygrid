@@ -875,7 +875,7 @@ class JobManager:
 			raise ValueError('Multiple dependencies specified for same jobname: %s.' % str(dependencies))
 
 		# Construct native spec for job
-		nativeSpecification = '-V -cwd -e %s -o %s -l mfree=%s,h_rt=%s' % (self.temp_directory, self.temp_directory, sublist[0].memory, sublist[0].walltime)
+		nativeSpecification = '-shell y -V -cwd -e %s -o %s -l mfree=%s,h_rt=%s' % (self.temp_directory, self.temp_directory, sublist[0].memory, sublist[0].walltime)
 		
 		if queue:
 			nativeSpecification += ' -q %s' % queue
