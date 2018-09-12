@@ -237,6 +237,57 @@ def _topological_sort(joblist):
     return joblist
 
 
+def _infer_all_dependencies(joblist):
+    """
+    Helper function to take the intitial list of jobs and get the full set of dependencies including chained dependencies.
+
+    Args:
+            joblist (list of Job): list of jobs
+
+    Returns:
+            list of Job: list of jobs that belong to or are dependent on a list of stages.
+
+    """
+    all_stages = list(set([job.name for job in joblist]))
+    all_dependencies = {}
+
+    # Get the full list of other stages each stage is dependent on
+    for stage in all_stages:
+        stage_set = set([stage])
+
+        for job in joblist:
+            for dependency in job.dependencies:
+                if dependency in stage_set:
+                    stage_set.add(job.name)
+
+        for other_stage in list(stage_set):
+            if other_stage != stage:
+                all_dependencies[other_stage] = list(set(all_dependencies.get(other_stage, []) + [stage]))
+
+    # Now fill in for all jobs
+    for job in joblist:
+        job.dependencies = list(set(job.dependencies + all_dependencies.get(job.name, [])))
+
+    return joblist
+
+
+def _get_skippable_jobs(joblist):
+    newjoblist = []
+    skipped_jobs = []
+    stages_running = set()
+    for job in joblist:
+        skippable = job.outputs_exist() and job.done_files_exist()
+        skippable = skippable and True not in [dep in stages_running for dep in job.dependencies]
+
+        if not skippable:
+            stages_running.add(job.name)
+            newjoblist.append(job)
+        else:
+            skipped_jobs.append(job)
+
+    return (newjoblist, skipped_jobs)
+
+
 class Job:
     """
     Class for holding metadata about a job.
@@ -394,12 +445,7 @@ class JobManager:
         """
         command = command_to_oneliner(command)
         job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, outputs=outputs)
-
-        if len(job.outputs) == 0 or not job.outputs_exist() or not job.done_files_exist():
-            job.remove_done_files()
-            self.joblist.append(job)
-        else:
-            self.skipped_jobs.append(job)
+        self.joblist.append(job)
 
     def run(self, queue=None, logging=True, dry=False):
         """
@@ -430,11 +476,18 @@ class JobManager:
         self.joblist = _topological_sort(self.joblist)
 
         # Infer any implicit dependencies on sorted data
-        self._infer_all_dependencies()
+        self.joblist = _infer_all_dependencies(self.joblist)
+
+        # Now check for any jobs that can be skipped
+        self.joblist, self.skipped_jobs = _get_skippable_jobs(self.joblist)
+
+        for job in self.joblist:
+            job.remove_done_files()
 
         # If any stages and entirely skipped, add to completed stages
         queued_stages = set([job.name for job in self.joblist])
         skipped_stages = set([job.name for job in self.skipped_jobs])
+
         self.completed_stages.update(skipped_stages.difference(queued_stages))
 
         # Submit each group of jobs as an array (or perform a dry run)
@@ -442,6 +495,7 @@ class JobManager:
             print('DRY RUN: would skip %s jobs that already have outputs present...' % len(self.skipped_jobs))
 
         # Build up the queue
+
         for group, joblist in itertools.groupby(self.joblist, key=lambda x: x.name):
             joblist = list(joblist)
 
@@ -453,7 +507,7 @@ class JobManager:
                 if len(joblist) > 10:
                     print('... (%s jobs not shown)' % (len(joblist) - 10))
             else:
-                joblist = self.queued_jobs[group] = joblist
+                self.queued_jobs[group] = joblist
 
         if dry:
             return
@@ -558,37 +612,6 @@ class JobManager:
         self.write_report(os.path.join(self.temp_directory, 'job_report.txt'))
 
         return total_failed == 0
-
-    def _infer_all_dependencies(self):
-        """
-        Helper function to take the intitial list of jobs and get the full set of dependencies including chained dependencies.
-
-        Args:
-                stages: list of stages to consider
-
-        Returns:
-                list of Job: list of jobs that belong to or are dependent on a list of stages.
-
-        """
-        all_stages = list(set([job.name for job in self.joblist]))
-        all_dependencies = {}
-
-        # Get the full list of other stages each stage is dependent on
-        for stage in all_stages:
-            stage_set = set([stage])
-
-            for job in self.joblist:
-                for dependency in job.dependencies:
-                    if dependency in stage_set:
-                        stage_set.add(job.name)
-
-            for other_stage in list(stage_set):
-                if other_stage != stage:
-                    all_dependencies[other_stage] = list(set(all_dependencies.get(other_stage, []) + [stage]))
-
-        # Now fill in for all jobs
-        for job in self.joblist:
-            job.dependencies = list(set(job.dependencies + all_dependencies.get(job.name, [])))
 
     def _check_dependencies(self):
         """
