@@ -56,7 +56,7 @@ SYSTEM_FAILED = 'SYSTEM_FAILED'
 COMPLETE_MISSING_OUTPUTS = 'COMPLETE_MISSING_OUTPUTS'
 
 # Buffer between job completion and completion status check to prevent race conditions
-COMPLETION_OUTPUT_CHECK_DELAY = 30000  # 30 seconds (time in ms)
+COMPLETION_OUTPUT_CHECK_DELAY = 60000  # 50 seconds (time in ms)
 
 # Table to translate common error codes into more useful text
 exit_codes = {
@@ -667,7 +667,7 @@ class JobManager:
             else:
                 return FINISHED
 
-        except:
+        except Exception:
             return FINISHED
 
     def _get_exit_status(self, job):
@@ -690,9 +690,13 @@ class JobManager:
             completion_time = int(float(exit_status['resourceUsage']['end_time']))
             time_since_completion = int(float((time.time() * 1000) - completion_time))
 
-            # Make sure some time has passed in case NFS is behind
+            # Check every second until a timeout for file to exist in case NFS is slow
             if exit_status['exitStatus'] == 0 and not job.outputs_exist() and time_since_completion < COMPLETION_OUTPUT_CHECK_DELAY:
-                time.sleep((COMPLETION_OUTPUT_CHECK_DELAY - time_since_completion) / 1000)
+                outputs_found = False
+                while (not outputs_found) and time_since_completion < COMPLETION_OUTPUT_CHECK_DELAY:
+                    time.sleep(5)
+                    time_since_completion = int(float((time.time() * 1000) - completion_time))
+                    outputs_found = job.outputs_exist()
 
             # Now check exit status
             if exit_status['exitStatus'] == 0:
