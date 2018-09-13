@@ -11,6 +11,7 @@ import stat
 import copy
 import collections
 import gzip
+from collections import defaultdict
 
 ARRAY_JOB_SCRIPT = """
 #!/bin/bash
@@ -237,6 +238,99 @@ def _topological_sort(joblist):
     return joblist
 
 
+class Graph:
+    """
+    Utility class to allow for inference of dependencies from inputs/outputs
+    """
+
+    def __init__(self, nodes):
+        self.graph = defaultdict(set)
+        for node in nodes:
+            self.graph[node]
+
+    def addEdge(self, u, v):
+        self.graph[u].add(v)
+
+    def topologicalSortUtil(self, v, visited, stack):
+
+        # Mark the current node as visited.
+        visited[v] = True
+
+        # Recur for all the vertices adjacent to this vertex
+        for i in self.graph[v]:
+            if not visited[i]:
+                self.topologicalSortUtil(i, visited, stack)
+
+        # Push current vertex to stack which stores result
+        stack.insert(0, v)
+
+    def topologicalSort(self):
+        visited = {k: False for k in self.graph}
+        stack = []
+
+        for node in self.graph:
+            if not visited[node]:
+                self.topologicalSortUtil(node, visited, stack)
+
+        return(stack)
+
+
+def _topological_sort_infer_dependencies(joblist):
+    """
+    Function that can sort stages according to their specified inputs and outputs.
+    """
+    stages = set([job.name for job in joblist])
+    stage_outputs = {}
+    stage_inputs = {}
+    dependencies = {stage: set() for stage in stages}
+
+    for job in joblist:
+        if job.name in stage_outputs:
+            stage_outputs[job.name].update(job.outputs)
+        else:
+            stage_outputs[job.name] = set(job.outputs)
+
+        if job.name in stage_inputs:
+            stage_inputs[job.name].update(job.inputs)
+        else:
+            stage_inputs[job.name] = set(job.inputs)
+
+    # Build a graph from input/output relationships
+    g = Graph(stages)
+
+    for job in joblist:
+        for stage in stage_outputs:
+            if stage == job.name:
+                continue
+
+            if set(job.inputs).intersection(stage_outputs[stage]):
+                g.addEdge(stage, job.name)
+                dependencies[job.name].add(stage)
+            if set(job.outputs).intersection(stage_inputs[stage]):
+                g.addEdge(job.name, stage)
+                dependencies[stage].add(job.name)
+
+    # Now populate the job dependencies
+    dependency_seen = False
+    for stage in dependencies:
+        dependencies[stage] = list(dependencies[stage])
+        if len(dependencies) > 0:
+            dependency_seen = True
+
+    if not dependency_seen:
+        raise ValueError('Operating in infer dependencies mode, but no dependencies between inputs and outputs were observed... Please make sure you have specified an input and outputs argument where necessary in add() command or if you are not specifying both inputs and outputs, run the pipeline without infer_dependencies=True (requires that you set dependencies between stages by name manually).')
+
+    for job in joblist:
+        job.dependencies = dependencies[job.name]
+
+    # Now get sort the jobs and return
+    sorted_order = g.topologicalSort()
+    sorted_order = {k: i for i, k in enumerate(sorted_order)}
+
+    joblist.sort(key=lambda job: sorted_order[job.name])
+    return joblist
+
+
 def _infer_all_dependencies(joblist):
     """
     Helper function to take the intitial list of jobs and get the full set of dependencies including chained dependencies.
@@ -293,12 +387,15 @@ class Job:
     Class for holding metadata about a job.
     """
 
-    def __init__(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', outputs=[]):
+    def __init__(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', inputs=[], outputs=[]):
         if not isinstance(name, str):
             raise ValueError('Provided job name must be a string, but found: %s' % name)
 
         if isinstance(dependencies, str):
             dependencies = [dependencies]
+
+        if isinstance(inputs, str):
+            outputs = [inputs]
 
         if isinstance(outputs, str):
             outputs = [outputs]
@@ -317,6 +414,7 @@ class Job:
         self.walltime = walltime
         self.dependencies = dependencies
         self.name = name
+        self.inputs = inputs
         self.outputs = outputs
         self.id = None
         self.exit_status = {}
@@ -444,13 +542,17 @@ class JobManager:
 
         """
         command = command_to_oneliner(command)
-        job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, outputs=outputs)
+        job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, inputs=inputs, outputs=outputs)
         self.joblist.append(job)
 
-    def run(self, queue=None, logging=True, dry=False):
+    def run(self, queue=None, infer_dependencies=False, logging=True, dry=False):
         """
         After adding jobs with add_jobs, this function executes them as a pipeline on Grid Engine.
-
+        Args:
+            queue (str): a queue name to submit to (optional)
+            infer_dependencies (bool): If True, stage dependencies are inferred from inputs and outputs.
+            logging (bool): log of job status printed to screen (True by default)
+            dry (bool): in a dry run, the pipeline is not run, it will just print a summary to screen
         Modifies:
                 Prints status to screen periodically as jobs change status.
                 Saves job report to temp directory on completion.
@@ -473,7 +575,10 @@ class JobManager:
         self._write_job_array_helper()
 
         # Sort jobs in required order by dependency
-        self.joblist = _topological_sort(self.joblist)
+        if infer_dependencies:
+            self.joblist = _topological_sort_infer_dependencies(self.joblist)
+        else:
+            self.joblist = _topological_sort(self.joblist)
 
         # Infer any implicit dependencies on sorted data
         self.joblist = _infer_all_dependencies(self.joblist)
