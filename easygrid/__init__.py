@@ -55,6 +55,7 @@ ABORTED = 'ABORTED'
 FAILED_DEPENDENCY = 'FAILED_DEPENDENCY'
 SYSTEM_FAILED = 'SYSTEM_FAILED'
 COMPLETE_MISSING_OUTPUTS = 'COMPLETE_MISSING_OUTPUTS'
+MISSING_INPUTS = 'FAILED_MISSING_INPUTS'
 
 # Buffer between job completion and completion status check to prevent race conditions
 COMPLETION_OUTPUT_CHECK_DELAY = 60000  # 50 seconds (time in ms)
@@ -456,6 +457,16 @@ class Job:
             if os.path.exists(path):
                 os.remove(path)
 
+    def inputs_exist(self):
+        """
+        Helper function to check if the requested set of input files exist.
+        """
+
+        if len(self.inputs) == 0:
+            return True
+        else:
+            return False not in [os.path.exists(path) for path in self.inputs]
+
     def outputs_exist(self):
         """
         Helper function to check if the requested set of output files exist.
@@ -600,7 +611,6 @@ class JobManager:
             print('DRY RUN: would skip %s jobs that already have outputs present...' % len(self.skipped_jobs))
 
         # Build up the queue
-
         for group, joblist in itertools.groupby(self.joblist, key=lambda x: x.name):
             joblist = list(joblist)
 
@@ -681,9 +691,26 @@ class JobManager:
 
                 elif dependencies_completed:
                     # All dependencies are done, schedule stage
-                    self.submitted_jobs[group] = joblist
-                    self._submit_arrayjob(joblist, queue)
-                    del self.queued_jobs[group]
+                    if self.inputs_exist():
+                        self.submitted_jobs[group] = joblist
+                        self._submit_arrayjob(joblist, queue)
+                        del self.queued_jobs[group]
+                    else:
+                        exit_status = {'hasExited': 'NA',
+                                       'hasSignal': 'NA',
+                                       'terminatedSignal': 'NA',
+                                       'hasCoreDump': 'NA',
+                                       'wasAborted': 'NA',
+                                       'exitStatus': 'NA',
+                                       'resourceUsage': 'NA',
+                                       'completion_status': MISSING_INPUTS}
+
+                        for job in joblist:
+                            job.set_run_state(FINISHED)
+                            job.set_exit_status(exit_status)
+
+                        self.completed_jobs[group] = joblist
+                        del self.queued_jobs[group]
 
             # Calculate counts for logging
             total_running = self._get_run_status_count(RUNNING)
@@ -934,7 +961,9 @@ class JobManager:
 
     def _get_failed_stages(self):
         """
-        Helper function to get a list of stages that have failed entirely.
+        Helper function to get a list of stages that have failed.
+        A single failure in a stage is enough to fail to make sure that it is easy to track
+        why things fail.
         """
         failed_stages = []
 
@@ -942,10 +971,11 @@ class JobManager:
             failed_jobs = []
 
             for job in self.submitted_jobs[group]:
-                if job.exit_status and (job.exit_status['completion_status'] == FAILED or job.exit_status['completion_status'] == COMPLETE_MISSING_OUTPUTS or job.exit_status['completion_status'] == FAILED_DEPENDENCY):
+                if job.exit_status and (job.exit_status['completion_status'] == FAILED or job.exit_status['completion_status'] == COMPLETE_MISSING_OUTPUTS or job.exit_status['completion_status'] == FAILED_DEPENDENCY or job.exit_status['completion_status'] == MISSING_INPUTS):
                     failed_jobs.append(job)
 
-            if len(failed_jobs) == len(self.submitted_jobs[group]):
+            # if len(failed_jobs) == len(self.submitted_jobs[group]):
+            if len(failed_jobs) > 0:
                 failed_stages.append(group)
 
         return failed_stages
@@ -1008,7 +1038,7 @@ class JobManager:
                         max_vmem_gb = 'NA'
                         duration = 'NA'
                         log_file = 'NA'
-                    elif job.exit_status['completion_status'] == FAILED_DEPENDENCY or job.exit_status['completion_status'] == ABORTED:
+                    elif job.exit_status['completion_status'] == FAILED_DEPENDENCY or job.exit_status['completion_status'] == MISSING_INPUTS or job.exit_status['completion_status'] == ABORTED:
                         # Exit status has a bunch of default values in this case just put in fillers
                         aborted = 'True'
                         completion_status = job.exit_status['completion_status']
