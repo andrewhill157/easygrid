@@ -7,6 +7,7 @@ import itertools
 import tempfile
 import datetime
 from glob import glob
+import inspect
 import stat
 import copy
 import collections
@@ -396,7 +397,7 @@ class Job:
             dependencies = [dependencies]
 
         if isinstance(inputs, str):
-            outputs = [inputs]
+            inputs = [inputs]
 
         if isinstance(outputs, str):
             outputs = [outputs]
@@ -505,6 +506,7 @@ class JobManager:
         self.inputs_specified = False
         self.outputs_specified = False
         self.dependencies_specified = False
+        self.possible_args = dict(inspect.signature(Job.__init__).parameters)
 
     def __del__(self):
         # Clean everything up
@@ -568,6 +570,24 @@ class JobManager:
         """
         if not isinstance(job, Job):
             raise ValueError('Input must be a Job object (easygrid.Job) or an extension thereof. See documentation for examples. The alternate add() function allows you specify inputs directly without creating an extension of the Job class.')
+
+        if not type(job) == Job:
+            # Automatically make a Job object from class attributes.
+            job_properties = job.__dict__
+
+            if 'command' not in job_properties:
+                raise ValueError('The job added, %s, does not specify the self.command attribute. self.name and self.command are required.' % type(job))
+
+            if 'name' not in job_properties:
+                raise ValueError('The job added, %s, does not specify the self.name attribute. self.name and self.command are required.' % type(job))
+
+            final_job_args = dict()
+            for item in job_properties:
+                if item not in self.possible_args:
+                    raise ValueError('self.%s defined in %s class, but will not is not a valid property for a Job.' % (item, type(job)))
+                else:
+                    final_job_args[item] = job_properties[item]
+            job = Job(**final_job_args)
 
         if job.inputs:
             self.inputs_specified = True
