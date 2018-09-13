@@ -319,7 +319,7 @@ def _topological_sort_infer_dependencies(joblist):
             dependency_seen = True
 
     if not dependency_seen:
-        raise ValueError('Operating in infer dependencies mode, but no dependencies between inputs and outputs were observed... Please make sure you have specified an input and outputs argument where necessary in add() command or if you are not specifying both inputs and outputs, run the pipeline without infer_dependencies=True (requires that you set dependencies between stages by name manually).')
+        raise ValueError('Operating in infer dependencies mode, but no dependencies between inputs and outputs were observed... Please make sure you have specified input and output arguments correctly in add() or add_jobs() command or if you are not specifying both inputs and outputs, run the pipeline without infer_dependencies=True (requires that you set dependencies between stages by name manually).')
 
     for job in joblist:
         job.dependencies = dependencies[job.name]
@@ -502,6 +502,9 @@ class JobManager:
         self.completed_stages = set()
         self.skipped_jobs = []
         self.job_templates = []
+        self.inputs_specified = False
+        self.outputs_specified = False
+        self.dependencies_specified = False
 
     def __del__(self):
         # Clean everything up
@@ -553,16 +556,27 @@ class JobManager:
 
         """
         job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, inputs=inputs, outputs=outputs)
-        self.joblist.append(job)
+        self.add_job(job)
 
     def add_job(self, job):
         """
         Equivalent to add() function, but allows you to add a Job object
+
+        Args:
+            job (easygrid.Job or extension thereof): A Job object or an extension of one.
+
         """
         if not isinstance(job, Job):
             raise ValueError('Input must be a Job object (easygrid.Job) or an extension thereof. See documentation for examples. The alternate add() function allows you specify inputs directly without creating an extension of the Job class.')
 
-        job.command = self.joblist.append(job)
+        if job.inputs:
+            self.inputs_specified = True
+        if job.outputs:
+            self.outputs_specified = True
+        if job.dependencies:
+            self.dependencies_specified = True
+
+        self.joblist.append(job)
 
     def run(self, queue=None, infer_dependencies=False, logging=True, dry=False):
         """
@@ -581,8 +595,24 @@ class JobManager:
 
         """
         # Error if no jobs added
-        if not self.joblist and not self.skipped_jobs:
-            raise ValueError('No jobs added. Must call add_jobs prior to running jobs.')
+        if not self.joblist:
+            raise ValueError('No jobs added. Must call add or add_jobs prior to running jobs.')
+
+        # Error if user mixed dependencies and inputs/outputs
+        if infer_dependencies and self.dependencies_specified:
+            raise ValueError('Error: we do not support a mix of specifying dependencies manually via the dependencies argument AND via specifying inputs/outputs. This is allowed if you are not inferring dependencies automatically (inputs and outputs are checked for existance in this case). When inferring dependencies automatically, we assume that any use of the dependencies argument is unintended and in general probably not a great idea anyway.')
+
+        if infer_dependencies and not (self.inputs_specified or self.outputs_specified):
+            raise ValueError('Error: you have run with infer_dependencies set to True, but no stages specify inputs or outputs  -- both inputs and outputs must be specified for at least some jobs in this mode.')
+
+        if infer_dependencies and not self.inputs_specified:
+            raise ValueError('Error: you have run with infer_dependencies set to True, but no stages specify inputs  -- both inputs and outputs must be specified for at least some jobs in this mode.')
+
+        if infer_dependencies and not self.outputs_specified:
+            raise ValueError('Error: you have run with infer_dependencies set to True, but no stages specify outputs -- both inputs and outputs must be specified for at least some jobs in this mode.')
+
+        if not infer_dependencies and not self.dependencies_specified:
+            LOGGER.warning('WARNING: no dependencies were specified via the dependencies argument, but you are running with infer_dependencies set to False. All your jobs will run at once. If this is not what you wanted, you must either specify stage dependencies by name manually using the dependencies argument for each stage or specify inputs and outputs for each stage and run with infer_dependencies set to True.')
 
         # Make sure no dependencies that are not in the scheduled or skipped set of jobs
         self._check_dependencies()
@@ -699,7 +729,7 @@ class JobManager:
 
                 elif dependencies_completed:
                     # All dependencies are done, schedule stage
-                    if self.inputs_exist():
+                    if False not in [job.inputs_exist() for job in joblist]:
                         self.submitted_jobs[group] = joblist
                         self._submit_arrayjob(joblist, queue)
                         del self.queued_jobs[group]
