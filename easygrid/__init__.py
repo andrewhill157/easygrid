@@ -410,7 +410,7 @@ class Job:
         if not isinstance(walltime, str):
             raise ValueError('Walltime request for job is not a string: %s. Must be a string such as "100:00:00" for units in hours:minutes:seconds.' % walltime)
 
-        self.command = command
+        self.command = command_to_oneliner(command)
         self.memory = memory
         self.walltime = walltime
         self.dependencies = dependencies
@@ -552,9 +552,17 @@ class JobManager:
                 outputs (list of str): a list of output files to check for before scheduling (if all are present, job not scheduled)
 
         """
-        command = command_to_oneliner(command)
         job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, inputs=inputs, outputs=outputs)
         self.joblist.append(job)
+
+    def add_job(self, job):
+        """
+        Equivalent to add() function, but allows you to add a Job object
+        """
+        if not isinstance(job, Job):
+            raise ValueError('Input must be a Job object (easygrid.Job) or an extension thereof. See documentation for examples. The alternate add() function allows you specify inputs directly without creating an extension of the Job class.')
+
+        job.command = self.joblist.append(job)
 
     def run(self, queue=None, infer_dependencies=False, logging=True, dry=False):
         """
