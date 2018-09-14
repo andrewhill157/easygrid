@@ -203,7 +203,11 @@ def command_to_oneliner(command):
 
     # Split into lines and get rid of empty lines
     lines = [x.strip() for x in command.strip().split('\n')]
-    lines = [line for line in lines if '' is not line]
+    lines = [line for line in lines if '' is not line and not line.startswith('#')]
+
+    for line in lines:
+        if '#' in line:
+            raise ValueError('A # character occurs in one of your commands, but not as the first character of a line. Easygrid assumes this is an inline comment, which is not currently allowed to simplify things: %s' % line)
 
     oneliner = '; '.join(lines)
     return oneliner
