@@ -273,7 +273,6 @@ class Graph:
         for node in self.graph:
             if not visited[node]:
                 self.topologicalSortUtil(node, visited, stack)
-
         return(stack)
 
 
@@ -300,17 +299,17 @@ def _topological_sort_infer_dependencies(joblist):
     # Build a graph from input/output relationships
     g = Graph(stages)
 
-    for job in joblist:
-        for stage in stage_outputs:
-            if stage == job.name:
+    for stage1 in stages:
+        for stage2 in stages:
+            if stage1 == stage2:
                 continue
 
-            if set(job.inputs).intersection(stage_outputs[stage]):
-                g.addEdge(stage, job.name)
-                dependencies[job.name].add(stage)
-            if set(job.outputs).intersection(stage_inputs[stage]):
-                g.addEdge(job.name, stage)
-                dependencies[stage].add(job.name)
+            if set(stage_inputs[stage1]).intersection(stage_outputs[stage2]):
+                g.addEdge(stage2, stage1)
+                dependencies[stage1].add(stage2)
+            if set(stage_outputs[stage1]).intersection(stage_inputs[stage2]):
+                g.addEdge(stage1, stage2)
+                dependencies[stage2].add(stage1)
 
     # Now populate the job dependencies
     dependency_seen = False
@@ -506,7 +505,10 @@ class JobManager:
         self.inputs_specified = False
         self.outputs_specified = False
         self.dependencies_specified = False
-        self.possible_args = dict(inspect.signature(Job.__init__).parameters)
+        try:
+            self.possible_args = set(inspect.signature(Job.__init__).parameters)
+        except AttributeError:
+            self.possible_args = set(inspect.getargspec(Job.__init__).args)
 
     def __del__(self):
         # Clean everything up
@@ -576,10 +578,10 @@ class JobManager:
             job_properties = job.__dict__
 
             if 'command' not in job_properties:
-                raise ValueError('The job added, %s, does not specify the self.command attribute. self.name and self.command are required.' % type(job))
+                raise ValueError('The job added, %s, does not specify the self.command attribute. self.name and self.command are required.' % job.__class__.__name__)
 
             if 'name' not in job_properties:
-                raise ValueError('The job added, %s, does not specify the self.name attribute. self.name and self.command are required.' % type(job))
+                job_properties['name'] = job.__class__.__name__
 
             final_job_args = dict()
             for item in job_properties:
@@ -712,14 +714,16 @@ class JobManager:
                             job.make_done_files()
 
             # Get any failed or finished stages
-            failed_stages = set(self._get_failed_stages())
             self.completed_stages.update(self._get_finished_stages())
 
-            # Move any completed jobs to completed queue and remove from scheduled
+            # Move any completed jobs to completed queue and remove from schedule
             for stage in self.completed_stages:
                 if stage in self.submitted_jobs and stage not in self.completed_jobs:
                     self.completed_jobs[stage] = self.submitted_jobs[stage]
                     del self.submitted_jobs[stage]
+
+            # Get the set of stages that have failed from those that have completed
+            failed_stages = set(self._get_failed_stages())
 
             # Decide if need to schedule any new stages
             for group in list(self.queued_jobs.keys()):
@@ -782,9 +786,11 @@ class JobManager:
                 stages_running = ['none']
 
             total_failed = self._get_completion_status_count(FAILED) + self._get_completion_status_count(SYSTEM_FAILED) + self._get_completion_status_count(ABORTED) + self._get_completion_status_count(COMPLETE_MISSING_OUTPUTS)
+            total_missing_inputs = self._get_completion_status_count(MISSING_INPUTS)
+            total_failed_dependencies = self._get_completion_status_count(FAILED_DEPENDENCY)
             total_complete = self._get_completion_status_count(COMPLETE)
 
-            log_message = '%s jobs running (stages: %s)\t%s jobs qw\t%s jobs pending\t%s jobs completed\t%s jobs failed\r' % (total_running, ','.join(stages_running), total_qw, total_pending, total_complete, total_failed)
+            log_message = '%s jobs running (stages: %s) | %s jobs qw | %s stages pending | %s jobs completed | %s jobs failed\r' % (total_running, ','.join(stages_running), total_qw, total_pending, total_complete, total_failed)
 
             # Only log when status has changed and when requested
             if logging and last_log and (last_log != log_message):
@@ -801,7 +807,10 @@ class JobManager:
         # Write out the report of logging results
         self.write_report(os.path.join(self.temp_directory, 'job_report.txt'))
 
-        return total_failed == 0
+        if total_missing_inputs or total_failed_dependencies:
+            LOGGER.error('%s job(s) could not run due to missing inputs and %s job(s) due to failed dependencies.' % (total_missing_inputs, total_failed_dependencies))
+
+        return total_failed + total_missing_inputs + total_failed_dependencies == 0
 
     def _check_dependencies(self):
         """
@@ -1025,16 +1034,12 @@ class JobManager:
         """
         failed_stages = []
 
-        for group in self.submitted_jobs:
-            failed_jobs = []
+        for group in self.completed_jobs:
 
-            for job in self.submitted_jobs[group]:
+            for job in self.completed_jobs[group]:
                 if job.exit_status and (job.exit_status['completion_status'] == FAILED or job.exit_status['completion_status'] == COMPLETE_MISSING_OUTPUTS or job.exit_status['completion_status'] == FAILED_DEPENDENCY or job.exit_status['completion_status'] == MISSING_INPUTS):
-                    failed_jobs.append(job)
-
-            # if len(failed_jobs) == len(self.submitted_jobs[group]):
-            if len(failed_jobs) > 0:
-                failed_stages.append(group)
+                    failed_stages.append(group)
+                    break
 
         return failed_stages
 
