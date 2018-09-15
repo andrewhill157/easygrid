@@ -254,29 +254,36 @@ class Graph:
         for node in nodes:
             self.graph[node]
 
-    def addEdge(self, u, v):
-        self.graph[u].add(v)
+    def add_edge(self, a, b):
+        self.graph[a].add(b)
 
-    def topologicalSortUtil(self, v, visited, stack):
+    def topological_sort_helper(self, node, visited, stack):
 
-        # Mark the current node as visited.
-        visited[v] = True
+        visited[node] = True
 
-        # Recur for all the vertices adjacent to this vertex
-        for i in self.graph[v]:
-            if not visited[i]:
-                self.topologicalSortUtil(i, visited, stack)
+        # Recurse
+        for connected_node in self.graph[node]:
+            if not visited[connected_node]:
+                self.topological_sort_helper(connected_node, visited, stack)
+            else:
+                # Cycle detected, try to get some potential stages to check
+                potential_cycle_members = []
+                for stage in self.graph:
+                    if node in self.graph[stage] or connected_node in self.graph[stage]:
+                        potential_cycle_members.append(stage)
 
-        # Push current vertex to stack which stores result
-        stack.insert(0, v)
+                raise ValueError('Cyclic dependency detected. These stages might be worth checking for mistakes: %s' % ', '.join(set([node] + [connected_node] + potential_cycle_members)))
 
-    def topologicalSort(self):
+        # Store result
+        stack.insert(0, node)
+
+    def topological_sort(self):
         visited = {k: False for k in self.graph}
         stack = []
 
         for node in self.graph:
             if not visited[node]:
-                self.topologicalSortUtil(node, visited, stack)
+                self.topological_sort_helper(node, visited, stack)
         return(stack)
 
 
@@ -309,10 +316,10 @@ def _topological_sort_infer_dependencies(joblist):
                 continue
 
             if set(stage_inputs[stage1]).intersection(stage_outputs[stage2]):
-                g.addEdge(stage2, stage1)
+                g.add_edge(stage2, stage1)
                 dependencies[stage1].add(stage2)
             if set(stage_outputs[stage1]).intersection(stage_inputs[stage2]):
-                g.addEdge(stage1, stage2)
+                g.add_edge(stage1, stage2)
                 dependencies[stage2].add(stage1)
 
     # Now populate the job dependencies
@@ -329,7 +336,7 @@ def _topological_sort_infer_dependencies(joblist):
         job.dependencies = dependencies[job.name]
 
     # Now get sort the jobs and return
-    sorted_order = g.topologicalSort()
+    sorted_order = g.topological_sort()
     sorted_order = {k: i for i, k in enumerate(sorted_order)}
 
     joblist.sort(key=lambda job: sorted_order[job.name])
