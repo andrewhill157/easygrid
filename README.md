@@ -1,5 +1,5 @@
 # easygrid
-`easygrid`is a pipelining tool for python and is inspired by `Queue` from the GATK team. `easygrid` doesn't have all the features that Queue has, but I have personally found it less cumbersome to use than `Queue`. Both `Queue` and `easygrid` take the approach of providing pipelining capabilities in what is otherwise a fairly normal looking script, which is very different from many other tools.
+`easygrid`is a pipelining tool for python and is inspired by `Queue` from the GATK team. I made it as a more convenient alternative to queue for my typical usage (IMO). Both `Queue` and `easygrid` take the approach of providing pipelining capabilities in what is otherwise a fairly normal looking script, which is very different from many other tools.
 
 Queue is currently compatible with grid engine systems, but in principle could be made compatible with any `DRMAA` compatible system (LSF, for example). I don't currently have a need for this, but would be willing to work on it if there was interest.
 
@@ -21,8 +21,10 @@ cd easygrid
 python setup.py install --user
 ```
 
-# Typical Usage
-Let's say you have a list of fastq files and you want to align them all to a reference, compute basic statistics on each one, and then make some plots all in parallel:
+# Usage
+There are two main ways to use `easygrid`. I described one below that might be easiest for beginners to understand, but recommend the `class`-based method described a bit later.
+
+First, say you have a list of fastq files and you want to align them all to a reference, compute basic statistics on each one, and then make some plots all in parallel:
 
 ```
 import easygrid
@@ -46,17 +48,15 @@ for fastq in fastq_list:
     pipeline.add(secondary_analysis_command, name='secondary_analysis', inputs=[bam_file], outputs=[secondary_results])
     pipeline.add(plot_command, name='plot', inputs=[secondary_results], outputs=[plot_name])
 
-pipeline.run(infer_dependencies=True)
+pipeline.run()
 ```
-
-By default `run` will log progress and a report will be saved to `.easygrid/job_report.txt` with information about completion status, runtime, memory usage, etc. Log files from all jobs will also be saved to this directory.
 
 Dependencies between jobs are automatically inferred from inputs/outputs to determine the order of execution.
 
 As shown above, `easygrid` also provides a handy `swap_ext` function for swapping file extensions much like other tools such as `Queue`. There are a few other handy functions in there was well that are not yet fully documented.
 
 # More Organized Way to Add Jobs
-We also allow specification of jobs via classes using the add_job() command (alternative to add()). This is more similar to the interface used in the `Queue` tool from the GATK team, and it is more nicely organized.
+`easygrid` also allows specification of jobs via classes using the `add_job()` command (alternative to add()). This is more similar to the interface used in the `Queue` tool from the GATK team, and it is more nicely organized.
 
 Here is a partial example of just a step to align reads:
 ```
@@ -80,14 +80,14 @@ This allows for easier code reuse and is more organized. It may not be as intuit
 # Lazy Mode
 Sometimes specifying all the inputs and outputs can be cumbersome for certain tools. If you just want to run a few things according a known chain of dependencies, you can do it by specifying dependencies manually via the `dependencies` argument.
 
-When adding to the pipeline (as above) you would just do:
+When adding to the pipeline (as above in the first example) you would just do:
 ```
 ...
     pipeline.add(align_command, name='align', memory='5G')
     pipeline.add(secondary_analysis_command, name='secondary_analysis', dependencies=['align'])
     pipeline.add(plot_command, name='plot', dependencies=['secondary_analysis'])
 
-pipeline.run() # note no infer_dependencies=True in this mode
+pipeline.run(infer_dependencies=False) # note infer_dependencies=False in this mode
 ```
 
 In this mode you could also optionally specify any set of inputs and/or outputs that you want checked at the beginning and end of job execution respectively, but they will not be used to infer dependencies.
