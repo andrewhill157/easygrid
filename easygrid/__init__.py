@@ -623,7 +623,7 @@ class JobManager:
 
         self.joblist.append(job)
 
-    def run(self, queue=None, infer_dependencies=False, logging=True, dry=False):
+    def run(self, queue=None, infer_dependencies=True, logging=True, dry=False):
         """
         After adding jobs with add_jobs, this function executes them as a pipeline on Grid Engine.
         Args:
