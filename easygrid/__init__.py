@@ -213,37 +213,6 @@ def command_to_oneliner(command):
     return oneliner
 
 
-def _topological_sort(joblist):
-    """
-    Topological sort of a list of jobs and their dependencies
-    """
-    graph_unsorted = list(set([(job.name, tuple(job.dependencies)) for job in joblist]))
-
-    graph_sorted = []
-
-    graph_unsorted = dict(graph_unsorted)
-
-    # Run until the unsorted graph is empty.
-    while graph_unsorted:
-        acyclic = False
-        for node, edges in list(graph_unsorted.items()):
-            for edge in edges:
-                if edge in graph_unsorted:
-                    break
-            else:
-                acyclic = True
-                del graph_unsorted[node]
-                graph_sorted.append((node, edges))
-
-        if not acyclic:
-            raise RuntimeError("Cyclic dependency detected. Dependencies may not be circular (A dependent on B and B dependent on A is invalid, for example.")
-
-    # Sort job list according to topological ordering
-    order = dict([(job[0], i) for i, job in enumerate(graph_sorted)])
-    joblist = sorted(joblist, key=lambda x: order[x.name])
-    return joblist
-
-
 class Graph:
     """
     Utility class to allow for inference of dependencies from inputs/outputs
@@ -257,45 +226,85 @@ class Graph:
     def add_edge(self, a, b):
         self.graph[a].add(b)
 
-    def topological_sort_helper(self, node, visited, stack):
+    def is_cyclic(self):
+        path = set()
+        visited = set()
 
-        visited[node] = True
+        def is_cyclic_helper(node):
+            if node in visited:
+                return False
+            visited.add(node)
+            path.add(node)  # track nodes on path
 
-        # Recurse
-        for connected_node in self.graph[node]:
-            if not visited[connected_node]:
-                self.topological_sort_helper(connected_node, visited, stack)
-            else:
-                # Cycle detected, try to get some potential stages to check
-                potential_cycle_members = []
-                for stage in self.graph:
-                    if node in self.graph[stage] or connected_node in self.graph[stage]:
-                        potential_cycle_members.append(stage)
+            for connected_node in self.graph[node]:
+                if connected_node in path or is_cyclic_helper(connected_node):
+                    return True
 
-                raise ValueError('Cyclic dependency detected. These stages might be worth checking for mistakes: %s' % ', '.join(set([node] + [connected_node] + potential_cycle_members)))
+            # ensure path contains only nodes at or above the current node
+            # so that cycles are defined as paths back to this node somewhere on a downstream path.
+            path.remove(node)
+            return False
 
-        # Store result
-        stack.insert(0, node)
+        return True in [is_cyclic_helper(node) for node in self.graph]
 
     def topological_sort(self):
-        visited = {k: False for k in self.graph}
-        stack = []
+        visited = defaultdict(lambda: False)
+        sorted_nodes = []
+
+        def topological_sort_helper(node):
+            visited[node] = True
+
+            for connected_node in self.graph[node]:
+                if not visited[connected_node]:
+                    topological_sort_helper(connected_node)
+
+            sorted_nodes.insert(0, node)  # nodes farthest along end up at end of list
 
         for node in self.graph:
             if not visited[node]:
-                self.topological_sort_helper(node, visited, stack)
-        return(stack)
+                topological_sort_helper(node)
+
+        return(sorted_nodes)
+
+
+def _topological_sort(joblist):
+    """
+    Sort stages according to their specified dependencies.
+    """
+    stages = set([job.name for job in joblist])
+    dependencies = {stage: set() for stage in stages}
+
+    # Build up graph from dependencies
+    for job in joblist:
+        dependencies[job.name].update(job.dependencies)
+
+    g = Graph(stages)
+
+    for stage in dependencies:
+        for other_stage in dependencies[stage]:
+            g.add_edge(other_stage, stage)
+
+    if g.is_cyclic():
+        raise ValueError('A cyclic dependency was detected. Please check that your inputs and outputs do not create a cycle.')
+
+    # Now get sort the jobs and return
+    sorted_order = g.topological_sort()
+    sorted_order = {k: i for i, k in enumerate(sorted_order)}
+
+    joblist.sort(key=lambda job: sorted_order[job.name])
+    return joblist
 
 
 def _topological_sort_infer_dependencies(joblist):
     """
-    Function that can sort stages according to their specified inputs and outputs.
+    Sort stages according to their specified inputs and outputs.
     """
     stages = set([job.name for job in joblist])
+    dependencies = {stage: set() for stage in stages}
     stage_outputs = {}
     stage_inputs = {}
-    dependencies = {stage: set() for stage in stages}
 
+    # Build up a set of all inputs and outputs
     for job in joblist:
         if job.name in stage_outputs:
             stage_outputs[job.name].update(job.outputs)
@@ -321,6 +330,9 @@ def _topological_sort_infer_dependencies(joblist):
             if set(stage_outputs[stage1]).intersection(stage_inputs[stage2]):
                 g.add_edge(stage1, stage2)
                 dependencies[stage2].add(stage1)
+
+    if g.is_cyclic():
+        raise ValueError('A cyclic dependency was detected. Please check that your inputs and outputs do not create a cycle.')
 
     # Now populate the job dependencies
     dependency_seen = False
@@ -584,7 +596,7 @@ class JobManager:
         if not isinstance(job, Job):
             raise ValueError('Input must be a Job object (easygrid.Job) or an extension thereof. See documentation for examples. The alternate add() function allows you specify inputs directly without creating an extension of the Job class.')
 
-        if not type(job) == Job:
+        if not job.__class__.__name__ == 'Job':
             # Automatically make a Job object from class attributes.
             job_properties = job.__dict__
 
@@ -597,7 +609,7 @@ class JobManager:
             final_job_args = dict()
             for item in job_properties:
                 if item not in self.possible_args:
-                    raise ValueError('self.%s defined in %s class, but will not is not a valid property for a Job.' % (item, type(job)))
+                    raise ValueError('self.%s defined in %s class, but will not is not an allowed property when defining a Job.' % (item, job.__class__.__name__))
                 else:
                     final_job_args[item] = job_properties[item]
             job = Job(**final_job_args)
