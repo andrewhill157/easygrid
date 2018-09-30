@@ -341,9 +341,6 @@ def _topological_sort_infer_dependencies(joblist):
         if len(dependencies) > 0:
             dependency_seen = True
 
-    if not dependency_seen:
-        raise ValueError('Operating in infer dependencies mode, but no dependencies between inputs and outputs were observed... Please make sure you have specified input and output arguments correctly in add() or add_jobs() command or if you are not specifying both inputs and outputs, run the pipeline without infer_dependencies=True (requires that you set dependencies between stages by name manually).')
-
     for job in joblist:
         job.dependencies = dependencies[job.name]
 
@@ -352,7 +349,7 @@ def _topological_sort_infer_dependencies(joblist):
     sorted_order = {k: i for i, k in enumerate(sorted_order)}
 
     joblist.sort(key=lambda job: sorted_order[job.name])
-    return joblist
+    return joblist, dependency_seen
 
 
 def _infer_all_dependencies(joblist):
@@ -394,7 +391,7 @@ def _get_skippable_jobs(joblist):
     skipped_jobs = []
     stages_running = set()
     for job in joblist:
-        skippable = job.outputs_exist() and job.done_files_exist()
+        skippable = job.outputs and job.outputs_exist() and job.done_files_exist()
         skippable = skippable and True not in [dep in stages_running for dep in job.dependencies]
 
         if not skippable:
@@ -528,6 +525,8 @@ class JobManager:
         self.inputs_specified = False
         self.outputs_specified = False
         self.dependencies_specified = False
+        self.stages = set()
+
         try:
             self.possible_args = set(inspect.signature(Job.__init__).parameters)
         except AttributeError:
@@ -618,6 +617,8 @@ class JobManager:
                     final_job_args[item] = job_properties[item]
             job = Job(**final_job_args)
 
+        self.stages.add(job.name)
+
         if job.inputs:
             self.inputs_specified = True
         if job.outputs:
@@ -651,16 +652,16 @@ class JobManager:
         if infer_dependencies and self.dependencies_specified:
             raise ValueError('Error: we do not support a mix of specifying dependencies manually via the dependencies argument AND via specifying inputs/outputs. This is allowed if you are not inferring dependencies automatically (inputs and outputs are checked for existance in this case). When inferring dependencies automatically, we assume that any use of the dependencies argument is unintended and in general probably not a great idea anyway.')
 
-        if infer_dependencies and not (self.inputs_specified or self.outputs_specified):
-            raise ValueError('Error: you have run with infer_dependencies set to True, but no stages specify inputs or outputs  -- both inputs and outputs must be specified for at least some jobs in this mode.')
+        if len(self.stages) > 1 and infer_dependencies and not self.inputs_specified:
+            LOGGER.warning('WARNING: you have run with infer_dependencies set to True, but no stages specify inputs -- both inputs and outputs should generally be specified for at least some jobs in this mode.')
 
-        if infer_dependencies and not self.inputs_specified:
-            raise ValueError('Error: you have run with infer_dependencies set to True, but no stages specify inputs  -- both inputs and outputs must be specified for at least some jobs in this mode.')
+        if len(self.stages) > 1 and infer_dependencies and not (self.inputs_specified or self.outputs_specified):
+            LOGGER.warning('WARNING: you have run with infer_dependencies set to True, but no stages specify inputs or outputs  -- both inputs and outputs should generally be specified for at least some jobs in this mode.')
 
-        if infer_dependencies and not self.outputs_specified:
-            raise ValueError('Error: you have run with infer_dependencies set to True, but no stages specify outputs -- both inputs and outputs must be specified for at least some jobs in this mode.')
+        if len(self.stages) > 1 and infer_dependencies and not self.outputs_specified:
+            LOGGER.warning('WARNING: you have run with infer_dependencies set to True, but no stages specify outputs -- both inputs and outputs should generally be specified for at least some jobs in this mode.')
 
-        if not infer_dependencies and not self.dependencies_specified:
+        if len(self.stages) > 1 and not infer_dependencies and not self.dependencies_specified:
             LOGGER.warning('WARNING: no dependencies were specified via the dependencies argument, but you are running with infer_dependencies set to False. All your jobs will run at once. If this is not what you wanted, you must either specify stage dependencies by name manually using the dependencies argument for each stage or specify inputs and outputs for each stage and run with infer_dependencies set to True.')
 
         # Make sure no dependencies that are not in the scheduled or skipped set of jobs
@@ -674,7 +675,10 @@ class JobManager:
 
         # Sort jobs in required order by dependency
         if infer_dependencies:
-            self.joblist = _topological_sort_infer_dependencies(self.joblist)
+            self.joblist, dependency_seen = _topological_sort_infer_dependencies(self.joblist)
+            
+            if len(self.stages) > 1 and not dependency_seen:
+                LOGGER.warning('WARNING: you have run with infer_dependencies set to True, but no dependencies were observed between inputs and outputs. If not intended, please check.')
         else:
             self.joblist = _topological_sort(self.joblist)
 
