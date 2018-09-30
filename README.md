@@ -60,7 +60,7 @@ As shown above, `easygrid` also provides a handy `swap_ext` function for swappin
 
 Here is a partial example of just a step to align reads:
 ```
-class AlignReads(easygrid.Job):
+class AlignReads:
     def __init__(self, fastq, reference, bam_file):
         self.inputs = [fastq, reference]
         self.outputs = [bam_file]
@@ -73,7 +73,7 @@ pipeline.add_job(AlignReads(myfastq, myreference, mybam))
 ...
 ```
 
-You must specify the command attribute within the class. If you do not provide a name command, the name will be the name of the class. All others are optional as with the `add()` command.
+The object you add must simply specify the command attribute and may optionally specify any attributes that match the name of arguments to the add function such as self.inputs, self.outputs, etc. If you do not provide a name command, the name will be the name of the class. All others are optional as with the `add()` command.
 
 This allows for easier code reuse and is more organized. It may not be as intuitive to some people, which is why both add() and add_job() are supported.
 
@@ -103,7 +103,7 @@ This mode is not recommended in most cases.
 
 - Unlike queue, this tool is centered on sets of jobs all with the same name rather than dependencies between individual jobs. So each stage will run all at once and is finished only once all jobs within that set of jobs completes. Multiple independent stages may all run at once.
 
-# Logginh
+# Logging
 `easygrid` generates a file `.easygrid/job_report.txt` after pipeline completion that logs several pieces of information about each job:
 
 - `jobid`: the job ID assigned by SGE

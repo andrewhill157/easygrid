@@ -593,12 +593,16 @@ class JobManager:
             job (easygrid.Job or extension thereof): A Job object or an extension of one.
 
         """
-        if not isinstance(job, Job):
+        if not isinstance(job, object):
             raise ValueError('Input must be a Job object (easygrid.Job) or an extension thereof. See documentation for examples. The alternate add() function allows you specify inputs directly without creating an extension of the Job class.')
 
         if not job.__class__.__name__ == 'Job':
             # Automatically make a Job object from class attributes.
             job_properties = job.__dict__
+
+            job_init = getattr(job, "__init__", None)
+            if not callable(job_init):
+                raise ValueError('The object passed to add_job must contain an __init__ method, did you forget to include one to set up the job attributes?')
 
             if 'command' not in job_properties:
                 raise ValueError('The job added, %s, does not specify the self.command attribute. self.name and self.command are required.' % job.__class__.__name__)
@@ -609,7 +613,7 @@ class JobManager:
             final_job_args = dict()
             for item in job_properties:
                 if item not in self.possible_args:
-                    raise ValueError('self.%s defined in %s class, but will not is not an allowed property when defining a Job.' % (item, job.__class__.__name__))
+                    raise ValueError('self.%s defined in %s class, but is not an allowed property when defining a Job.' % (item, job.__class__.__name__))
                 else:
                     final_job_args[item] = job_properties[item]
             job = Job(**final_job_args)
