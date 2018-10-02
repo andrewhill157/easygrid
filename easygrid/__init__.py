@@ -164,8 +164,9 @@ def read_delim(file_path, header=True, columns=None, types=None, sep='\t'):
 
     if types:
         typed_columns = set(types.keys())
-        if False in [column in typed_columns for column in columns]:
-            raise ValueError('Provided a type for %s column in types argument, but column does not appear in file or columns argument.' % column)
+        for column in columns:
+            if not column in typed_columns:
+                raise ValueError('Provided a type for %s column in types argument, but column does not appear in file or columns argument.' % column)
 
     # Parse file
     for line_number, line in enumerate(fh):
