@@ -195,6 +195,31 @@ def touch(path):
         os.utime(path, None)
 
 
+def files_exist(files):
+    """
+    Checks if files exist. Wildcards are used if '*' is in the path name.
+    Returns true if an empty list is passed.
+
+    Args:
+        files (List[str]): list of file names
+    
+    Returns:
+        bool: true if all the files exist and false if not
+    """
+    if len(files) == 0:
+        return True
+    else:
+        for path in files:
+            if '*' in path:
+                exists = len(glob(path)) > 0
+            else:
+                exists = os.path.exists(path)
+
+            if not exists:
+                return False
+    return True
+
+
 def command_to_oneliner(command):
     """
     Converts a command to a one-liner to it is can be used in job array.
@@ -463,11 +488,7 @@ class Job:
 
     def done_files_exist(self):
         done_files = self.get_done_files()
-
-        if len(done_files) == 0:
-            return True
-        else:
-            return False not in [os.path.exists(path) for path in done_files]
+        return files_exist(done_files)
 
     def make_done_files(self):
         for path in self.get_done_files():
@@ -482,22 +503,13 @@ class Job:
         """
         Helper function to check if the requested set of input files exist.
         """
-
-        if len(self.inputs) == 0:
-            return True
-        else:
-            return False not in [os.path.exists(path) for path in self.inputs]
+        return files_exist(self.inputs)
 
     def outputs_exist(self):
         """
         Helper function to check if the requested set of output files exist.
         """
-
-        if len(self.outputs) == 0:
-            return True
-        else:
-            return False not in [os.path.exists(path) for path in self.outputs]
-
+        return files_exist(self.outputs)
 
 class JobManager:
     """
