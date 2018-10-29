@@ -235,8 +235,16 @@ def command_to_oneliner(command):
         if '#' in line:
             raise ValueError('A # character occurs in one of your commands, but not as the first character of a line. Easygrid assumes this is an inline comment, which is not currently allowed to simplify things: %s' % line)
 
-    oneliner = '; '.join(lines)
+    oneliner = '; '.join(lines).strip(';')
     return oneliner
+
+
+def chunk_list(l, n): 
+    """
+    Helper function to chunk lists into N-sized chunks.
+    """
+    for i in range(0, len(l), n):  
+        yield l[i:i+n]
 
 
 class Graph:
@@ -434,7 +442,7 @@ class Job:
     Class for holding metadata about a job.
     """
 
-    def __init__(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', inputs=[], outputs=[]):
+    def __init__(self, command, name, dependencies=[], memory='1G', batch_size=1, walltime='100:00:00', inputs=[], outputs=[]):
         if not isinstance(name, str):
             raise ValueError('Provided job name must be a string, but found: %s' % name)
 
@@ -456,8 +464,12 @@ class Job:
         if not isinstance(walltime, str):
             raise ValueError('Walltime request for job is not a string: %s. Must be a string such as "100:00:00" for units in hours:minutes:seconds.' % walltime)
 
+        if not isinstance(batch_size, int):
+            raise ValueError('Batch size must be an integer: %s' % batch_size)
+
         self.command = command_to_oneliner(command)
         self.memory = memory
+        self.batch_size = batch_size
         self.walltime = walltime
         self.dependencies = dependencies
         self.name = name
@@ -580,7 +592,7 @@ class JobManager:
         """
         self.temp_directory = os.path.abspath(path)
 
-    def add(self, command, name, dependencies=[], memory='1G', walltime='100:00:00', inputs=[], outputs=[]):
+    def add(self, command, name, dependencies=[], memory='1G', batch_size=1, walltime='100:00:00', inputs=[], outputs=[]):
         """
         Adds a command to be run as a job in the job manager.
         Must be called at least once prior to calling run_jobs.
@@ -589,6 +601,7 @@ class JobManager:
                 command (str): Command to be run in terminal for this job.
                 name (str): a name to identify the stage of the pipeline this job belongs to
                 memory (str): memory request for job such as '1G'
+                batch_size (int): number of commands to run per job submitted to cluster. Useful for reducing the total number of jobs submitted.f
                 walltime (str): wall time request such as '100:00:00'
                 dependencies (list of str): a list of names for other stages that this job is dependent on.
                 outputs (list of str): a list of output files to check for before scheduling (if all are present, job not scheduled)
@@ -717,6 +730,8 @@ class JobManager:
         # Build up the queue
         for group, joblist in itertools.groupby(self.joblist, key=lambda x: x.name):
             joblist = list(joblist)
+
+            joblist = JobManager.batch_jobs(joblist)
 
             if dry:
                 print(self._get_group_dry_run_message(group, joblist))
@@ -855,6 +870,41 @@ class JobManager:
             LOGGER.error('%s job(s) could not run due to missing inputs and %s job(s) due to failed dependencies.' % (total_missing_inputs, total_failed_dependencies))
 
         return total_failed + total_missing_inputs + total_failed_dependencies == 0
+
+    @staticmethod
+    def batch_jobs(joblist):
+        """
+        Helper function to combine jobs into batches.
+        """
+
+        # User may not request batching
+        if joblist[0].batch_size == 1:
+            return joblist
+
+        batched_jobs = []
+        for chunk in chunk_list(joblist, joblist[0].batch_size):
+            new_job = copy.deepcopy(joblist[0])
+
+            # Make a new job that combines the others
+            all_inputs = []
+            all_outputs = []
+            all_commands = []
+            for job in chunk:
+                all_inputs.extend(job.inputs)
+                all_outputs.extend(job.outputs)
+                all_commands.append(job.command)
+            
+            new_job.inputs = all_inputs
+            new_job.outputs = all_outputs
+
+            # Join commands, changing back to original working directory in between just in case
+            working_directory = os.getcwd()
+            cd_command = '; cd %s; ' % working_directory
+
+            new_job.command = cd_command.join(all_commands)
+            batched_jobs.append(new_job)
+
+        return batched_jobs
 
     def _check_dependencies(self):
         """
