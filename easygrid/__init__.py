@@ -442,7 +442,7 @@ class Job:
     Class for holding metadata about a job.
     """
 
-    def __init__(self, command, name, dependencies=[], memory='1G', batch_size=1, walltime='100:00:00', inputs=[], outputs=[]):
+    def __init__(self, command, name, dependencies=[], memory='1G', threads=1, batch_size=1, walltime='100:00:00', inputs=[], outputs=[]):
         if not isinstance(name, str):
             raise ValueError('Provided job name must be a string, but found: %s' % name)
 
@@ -461,6 +461,9 @@ class Job:
         if not re.search('[0-9]+[kKmMgG]$', memory):
             raise ValueError('Invalid memory request: %s, valid multipliers are k, m, or g (case insensitive).' % memory)
 
+        if not isinstance(threads, int):
+            raise ValueError('Invalid value for threads, must be an int.')
+
         if not isinstance(walltime, str):
             raise ValueError('Walltime request for job is not a string: %s. Must be a string such as "100:00:00" for units in hours:minutes:seconds.' % walltime)
 
@@ -469,6 +472,7 @@ class Job:
 
         self.command = command_to_oneliner(command)
         self.memory = memory
+        self.threads = threads
         self.batch_size = batch_size
         self.walltime = walltime
         self.dependencies = dependencies
@@ -592,7 +596,7 @@ class JobManager:
         """
         self.temp_directory = os.path.abspath(path)
 
-    def add(self, command, name, dependencies=[], memory='1G', batch_size=1, walltime='100:00:00', inputs=[], outputs=[]):
+    def add(self, command, name, dependencies=[], memory='1G', threads=1, batch_size=1, walltime='100:00:00', inputs=[], outputs=[]):
         """
         Adds a command to be run as a job in the job manager.
         Must be called at least once prior to calling run_jobs.
@@ -601,13 +605,14 @@ class JobManager:
                 command (str): Command to be run in terminal for this job.
                 name (str): a name to identify the stage of the pipeline this job belongs to
                 memory (str): memory request for job such as '1G'
+                threads (int): thread request for job such as 1
                 batch_size (int): number of commands to run per job submitted to cluster. Useful for reducing the total number of jobs submitted.f
                 walltime (str): wall time request such as '100:00:00'
                 dependencies (list of str): a list of names for other stages that this job is dependent on.
                 outputs (list of str): a list of output files to check for before scheduling (if all are present, job not scheduled)
 
         """
-        job = Job(command, name, dependencies=dependencies, memory=memory, walltime=walltime, inputs=inputs, outputs=outputs)
+        job = Job(command, name, dependencies=dependencies, memory=memory, threads=threads, walltime=walltime, inputs=inputs, outputs=outputs)
         self.add_job(job)
 
     def add_job(self, job):
@@ -1173,7 +1178,7 @@ class JobManager:
             raise ValueError('No completed jobs to report. Make sure to call run() function prior to writing report.')
 
         with open(filename, 'w') as report:
-            report.write('\t'.join(['jobid', 'stage', 'status', 'was_aborted', 'exit_status', 'memory_request', 'max_vmem_gb', 'duration_hms', 'log_file', 'command']) + '\n')
+            report.write('\t'.join(['jobid', 'stage', 'status', 'was_aborted', 'exit_status', 'memory_request', 'thread_request', 'max_vmem_gb', 'duration_hms', 'log_file', 'command']) + '\n')
 
             # Report on both scheduled and skipped jobs
             report_jobs = copy.deepcopy(self.completed_jobs)
@@ -1186,6 +1191,7 @@ class JobManager:
                     job_id = job.id
                     command = str(job.command)
                     memory_request = str(job.memory)
+                    thread_request = str(job.threads)
 
                     # If job was not scheduled, just put in dummy entry
                     if not job_id and not job.exit_status:
@@ -1213,7 +1219,7 @@ class JobManager:
                         log_file = ','.join(glob(os.path.join(self.temp_directory, '*%s' % job.id)))
 
                     # Construct output
-                    entries = [str(job_id), job.name, completion_status, aborted, exit_status, memory_request, max_vmem_gb, duration, log_file, command]
+                    entries = [str(job_id), job.name, completion_status, aborted, exit_status, memory_request, thread_request, max_vmem_gb, duration, log_file, command]
                     report.write('\t'.join(entries) + '\n')
 
     def _get_job_array_helper_path(self):
@@ -1243,7 +1249,7 @@ class JobManager:
             raise ValueError('Multiple dependencies specified for same jobname: %s.' % str(dependencies))
 
         # Construct native spec for job
-        nativeSpecification = '-shell y -V -cwd -e %s -o %s -l mfree=%s,h_rt=%s' % (self.temp_directory, self.temp_directory, sublist[0].memory, sublist[0].walltime)
+        nativeSpecification = '-shell y -V -cwd -e %s -o %s -l mfree=%s,h_rt=%s -pe serial %s' % (self.temp_directory, self.temp_directory, sublist[0].memory, sublist[0].walltime, sublist[0].threads)
 
         if queue:
             nativeSpecification += ' -q %s' % queue
