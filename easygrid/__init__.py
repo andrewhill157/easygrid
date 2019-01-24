@@ -92,6 +92,22 @@ def swap_ext(filename, old_extension, new_extension):
 
     return filename.replace(old_extension, new_extension)
 
+def make_filenames(directory, prefixes, extension):
+    """
+    Utility function that allows you to construct filenames given directory, a list of prefixes, and an extension.
+
+    Args:
+        directory (str): directory to use when constructing file names
+        prefixes (list of str): prefixes to use for files (not including the directory)
+        extension (str): extension of the files returned
+    
+    Returns:
+        list of str: List of the constructed file names.
+    """
+    if not isinstance(prefixes, list):
+        raise ValueError('prefixes argument must be a list.')
+
+    return [os.path.join(directory, '%s%s') % (prefix, extension) for prefix in prefixes]
 
 def mkdir(directory):
     """
@@ -231,11 +247,20 @@ def command_to_oneliner(command):
     lines = [x.strip() for x in command.strip().split('\n')]
     lines = [line for line in lines if '' is not line and not line.startswith('#')]
 
+    final_lines = []
+    special_end_characters = set([',', ';', '{', 'BEGIN', 'END'])
+
     for line in lines:
         if '#' in line:
             raise ValueError('A # character occurs in one of your commands, but not as the first character of a line. Easygrid assumes this is an inline comment, which is not currently allowed to simplify things: %s' % line)
 
-    oneliner = '; '.join(lines).strip(';')
+        # Add semicolons to the end of lines as long as they don't end in special characters
+        if line[-1] in special_end_characters:
+            final_lines.append(line)
+        else:
+            final_lines.append('%s; ' % line)
+
+    oneliner = ''.join(final_lines).strip(';')
     return oneliner
 
 
