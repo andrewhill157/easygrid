@@ -1,10 +1,16 @@
 # easygrid
-`easygrid`is a pipelining tool for python and is inspired by `Queue` from the GATK team. I made it as a more convenient alternative to queue for my typical usage (IMO). Both `Queue` and `easygrid` take the approach of providing pipelining capabilities in what is otherwise a fairly normal looking script, which is very different from many other tools.
+`easygrid`is a pipelining tool written in python inspired by `Queue` from the GATK team.
 
-Queue is currently compatible with grid engine systems, but in principle could be made compatible with any `DRMAA` compatible system (LSF, for example). I don't currently have a need for this, but would be willing to work on it if there was interest.
+I wanted but could not find a tool that was both:
+1. simple and easy enough to use that I wouldn't be put off using it for one-off analyses
+2. fully featured enough that I could use it for complex pipelines
+
+Another motivation was to learn more about how one would build out a workflow management tool and the different challenges to consider. Fortunately, I have also come to use `easygrid` extensively in my own work.
+
+`easygrid` is currently compatible with grid engine systems, but in principle could be made compatible with any `DRMAA` compatible system (LSF, for example) with some work. It does not currently support `docker` and will likely not ever be as fully featured as other tools like `snakemake`, `nextflow`, `WDL/cromwell` and others that have been widely adopted by the community, but I personally find it much easier to use (your mileage may vary).
 
 # Installation
-You must have `drmaa` available. On UW GS cluster you may simply:
+You must have `drmaa` available. On UW GS cluster which has a module system available you may simply:
 ```
 module load drmaa/latest
 ```
@@ -22,84 +28,49 @@ python setup.py install --user
 ```
 
 # Usage
-There are two main ways to use `easygrid`. I described one below that might be easiest for beginners to understand, but recommend the `class`-based method described a bit later.
+`easygrid` allows you to specify different stages of a pipeline via classes. If you have used tools like `Queue` from the GATK team, the overall look and feel of the code below should be fairly familiar.
 
-First, say you have a list of fastq files and you want to align them all to a reference, compute basic statistics on each one, and then make some plots all in parallel:
-
-```
-import easygrid
-
-# These could also be provided as script arguments, a samplesheet, etc.
-fastq_list = ['fastq1.fq', 'fastq2.fq', 'fastq3.fq']
-reference = 'hg19.fa'
-
-pipeline = easygrid.JobManager()
-
-for fastq in fastq_list:
-    bam_file = easygrid.swap_ext(fastq, '.fq', '.bam')
-    secondary_results = easygrid.swap_ext(fastq, '.bam', '.results.txt')
-    plot_name = easygrid.swap_ext(fastq, '.txt', '.png')
-
-    align_command = 'align_reads.sh %s %s %s' % (fastq, reference, bam_file)
-    secondary_analysis_command = 'python analyze_reads.py %s %s' % (bam_file, secondary_results)
-    plot_command = 'Rscript plot_data.R %s %s' % (secondary_results, plot_name)
-
-    pipeline.add(align_command, name='align', inputs=[reference, fastq], outputs=[bam_file], memory='5G')
-    pipeline.add(secondary_analysis_command, name='secondary_analysis', inputs=[bam_file], outputs=[secondary_results])
-    pipeline.add(plot_command, name='plot', inputs=[secondary_results], outputs=[plot_name])
-
-pipeline.run()
-```
-
-Dependencies between jobs are automatically inferred from inputs/outputs to determine the order of execution.
-
-As shown above, `easygrid` also provides a handy `swap_ext` function for swapping file extensions much like other tools such as `Queue`. There are a few other handy functions in there was well that are not yet fully documented.
-
-# More Organized Way to Add Jobs
-`easygrid` also allows specification of jobs via classes using the `add_job()` command (alternative to add()). This is more similar to the interface used in the `Queue` tool from the GATK team, and it is more nicely organized.
-
-Here is a partial example of just a step to align reads:
+For example. say we wanted to define a stage that aligns reads to the genome.
 ```
 class AlignReads:
     def __init__(self, fastq, reference, bam_file):
         self.inputs = [fastq, reference]
         self.outputs = [bam_file]
+        self.threads = 8
         self.memory = '5G'
-        self.command = "align_reads.sh %s %s %s" % (fastq, reference, bam_file)
+        
+        self.command = """
+        myaligner {fastq} \
+        {reference} \
+        {bam_file} \
+        --threads {threads}
+        """.format(fastq=fastq, reference=reference, bam_file=bam_file, threads=self.threads)
 
-pipeline = easygrid.JobManager()
+pipeline = easygrid.JobManager('_logs')
 pipeline.add_job(AlignReads(myfastq, myreference, mybam))
-
+pipeline.run(dry=False)
 ...
 ```
 
-The object you add must simply specify the command attribute and may optionally specify any attributes that match the name of arguments to the add function such as self.inputs, self.outputs, etc. If you do not provide a name command, the name will be the name of the class. All others are optional as with the `add()` command.
+So you intialize a pipeline via the `JobManager` class and then use the `add_job` method to add specific jobs to the pipeline. 
 
-This allows for easier code reuse and is more organized. It may not be as intuitive to some people, which is why both add() and add_job() are supported.
-
-# Lazy Mode
-Sometimes specifying all the inputs and outputs can be cumbersome for certain tools. If you just want to run a few things according a known chain of dependencies, you can do it by specifying dependencies manually via the `dependencies` argument.
-
-When adding to the pipeline (as above in the first example) you would just do:
-```
-...
-    pipeline.add(align_command, name='align', memory='5G')
-    pipeline.add(secondary_analysis_command, name='secondary_analysis', dependencies=['align'])
-    pipeline.add(plot_command, name='plot', dependencies=['secondary_analysis'])
-
-pipeline.run(infer_dependencies=False) # note infer_dependencies=False in this mode
-```
-
-In this mode you could also optionally specify any set of inputs and/or outputs that you want checked at the beginning and end of job execution respectively, but they will not be used to infer dependencies.
-
-This mode is not recommended in most cases.
+In a given class, you can specify:
+- `self.inputs`: list of file names or wildcards representing inputs to that job
+- `self.outputs`: same as inputs but for outputs of the job
+- `self.threads`: integer indicating the number of slots/threads the job should request
+- `self.memory`: string such as `5G` that indicates the amount of memory requires (5 gigabytes here)
+- `self.batch_size`: integer indicating the number of jobs from this stage that be run per process on the cluster. This allows multiple commands to be run as a single job on the cluster without having to manually batch them into groups)
+- `self.walltime`: walltime string such as `24:00:00` as passed to say `-l h_rt=24:00:00` in SGE, for example.
+- `self.command`: the actual command to be run. With some exceptions this can be pretty much any single or multi-line command that you would run in bash. Any comments must be on their own line and some awk commands or other more exotic multi-line commands can sometimes cause issues because all multi-line commands have to be converted to a valid single line command within easygrid.
 
 # Other Details
-- Commands may contain pipes/redirects, etc. and span more than one line. You can even have comments as long as they are the only thing on their line.
+- Commands may contain pipes/redirects, etc.
 
 - When jobs fail, but write partial output, you don't need to worry about deleting the partial files, `easygrid` writes hidden `.done` files for each output file only when the output is present and the job returned no error code, which means these jobs will rerun on restart if there was an error.
 
 - If you say figured out that an intermediate step was incorrect and removed its outputs, if you run the pipeline any downstream steps that depend on that stage will rerun as well.
+
+- Unlike some other tools, timestamps on files are not used to determine when downstream steps should be run. If a file and its `.done` file are present, the pipeline considers that job to be complete unless one of the jobs it depends on had to be rerun.
 
 - Unlike queue, this tool is centered on sets of jobs all with the same name rather than dependencies between individual jobs. So each stage will run all at once and is finished only once all jobs within that set of jobs completes. Multiple independent stages may all run at once.
 
