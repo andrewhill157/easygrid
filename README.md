@@ -52,7 +52,7 @@ pipeline.run(dry=False)
 ...
 ```
 
-So you intialize a pipeline via the `JobManager` class and then use the `add_job` method to add specific jobs to the pipeline. 
+So you intialize a pipeline via the `JobManager` class and then use the `add_job` method to add specific jobs to the pipeline. When you have multiple stages, their order of execution is determined from their shared inputs/outputs.
 
 In a given class, you can specify:
 - `self.inputs`: list of file names or wildcards representing inputs to that job
