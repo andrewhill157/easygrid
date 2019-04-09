@@ -75,7 +75,7 @@ In a given class, you can specify:
 - Unlike queue, this tool is centered on sets of jobs all with the same name rather than dependencies between individual jobs. So each stage will run all at once and is finished only once all jobs within that set of jobs completes. Multiple independent stages may all run at once.
 
 # Log Files
-`easygrid` generates a file `easygrid_logs/job_report.txt` after pipeline completion that logs several pieces of information about each job:
+`easygrid` generates a file `_easygrid_logs/job_report.txt` after pipeline completion that logs several pieces of information about each job:
 
 - `jobid`: the job ID assigned by SGE
 - `stage`: the name of the stage this job belonged to
