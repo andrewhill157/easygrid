@@ -558,7 +558,7 @@ class JobManager:
     where different stages of the pipeline are dependent on one another.
     """
 
-    def __init__(self, temp_directory='.easygrid'):
+    def __init__(self, temp_directory='_easygrid_logs'):
         """
         Constructor
 
@@ -783,7 +783,8 @@ class JobManager:
             LOGGER.info('All %s jobs have outputs present. Nothing to do.' % len(self.skipped_jobs))
 
         # Log skipped jobs if there are any
-        if len(self.skipped_jobs) > 0:
+        if len(self.skipped_jobs) 
+        > 0:
             LOGGER.info('Skipping %s jobs because specified outputs already present...' % len(self.skipped_jobs))
 
         last_log = None
