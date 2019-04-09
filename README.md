@@ -74,8 +74,8 @@ In a given class, you can specify:
 
 - Unlike queue, this tool is centered on sets of jobs all with the same name rather than dependencies between individual jobs. So each stage will run all at once and is finished only once all jobs within that set of jobs completes. Multiple independent stages may all run at once.
 
-# Logging
-`easygrid` generates a file `.easygrid/job_report.txt` after pipeline completion that logs several pieces of information about each job:
+# Log Files
+`easygrid` generates a file `easygrid_logs/job_report.txt` after pipeline completion that logs several pieces of information about each job:
 
 - `jobid`: the job ID assigned by SGE
 - `stage`: the name of the stage this job belonged to
@@ -88,15 +88,15 @@ In a given class, you can specify:
 - `log_file`: the `.e*` and `*.o` log files for the job (comma separated)
 - `command`: the command that was run
 
-# Logging
+The `easygrid_logs` directory will also contain log files output for each job by SGE named after their stage name (the name fo the class in code above).
+
+# Logging During Execution
 
 After calling the `run` function, `easygrid` will log basic information about the jobs that are running, scheduled but not running yet (qw), completed, and failed.
 
 ```
 [EASYGRID]: 2017-08-09 09:44:34,360: 9 jobs running (stages: align_reads)	0 jobs qw | 0 stages pending | 0 jobs completed | 0 jobs failed
 ```
-
-Log files from grid engine for each job will also be output to the same directory -- `.easygrid/`.
 
 # Dry Run
 You may also provide `dry=True` to the `run` function and a text description of jobs that would be run will print to the screen. This "dry run" feature is handy for checking that everything is set up correctly before executing the pipeline.
